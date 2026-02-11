@@ -1,0 +1,159 @@
+[REQUEST]
+aistudio에서 **흰색(⚪)만 뜨는 이유**는 지금 로직이 이거라서 그래.
+
+* **흰색은 “초기 1회 무조건 상태 전송”**(`hasSentInitialState`) 때문에, 생성중 감지가 실패해도 항상 표시됨.
+* 근데 **주황(🟠)/연두(🟢)** 는 “생성중 여부(currentlyGenerating)”가 `false -> true -> false`로 바뀌어야 나오는데,
+* aistudio 쪽 감지가 지금 **`mat-icon`, `mat-progress-bar`만 찾고 있어서** 대부분의 AI Studio UI에서(특히 `<run-button>` 기반) **생성중을 영원히 못 잡음** → 그래서 🟠/🟢가 안 뜸.
+
+AI Studio는 실제로 **`run-button` 커스텀 엘리먼트** 아래에 Run/Stop 버튼이 들어가거나 `button.run-button` 형태로 잡히는 케이스가 많아서, 그걸 기준으로 감지해야 함. ([Scribd][1])
+
+아래 패치 적용하면 AI Studio에서도:
+
+* Run 영역 버튼의 `aria-label/텍스트`가 Stop/Cancel/중지류면 🟠
+* Stop이 사라지고 완료되면 🟢
+* 클릭/스크롤하면 ⚪ 로 정상 동작하게 됨
+
+```diff
+--- /mnt/data/ready_ai_orig/sources/src/content.js	2026-02-11 13:14:16.000000000 +0000
++++ /mnt/data/ready_ai/sources/src/content.js	2026-02-11 04:31:02.986245155 +0000
+@@ -55,6 +55,111 @@
+   if (host.includes('claude.ai')) return 'claude';
+   return null;
+ }
++
++// ===== AI Studio 생성중 감지 강화 =====
++// 기존 구현은 mat-icon / mat-progress-bar 에만 의존했는데,
++// AI Studio는 <run-button> (커스텀 엘리먼트) 아래에 실제 버튼이 들어가 있어
++// stop 아이콘/텍스트를 못 잡는 경우가 흔하다.
++//
++// 목표: 아래 신호 중 하나라도 잡히면 "생성중"으로 판단
++//  - Run 영역(run-button) 내 버튼의 aria-label / 텍스트에 Stop/Cancel/중지 등이 존재
++//  - run-button 주변 아이콘(material-symbols-outlined / mat-icon) 에 stop류 표시
++//  - progressbar/spinner 류 표시
++//  - aria-busy / data-streaming 같은 busy 플래그
++function _normText(v) {
++  if (v == null) return '';
++  return String(v).replace(/\s+/g, ' ').trim().toLowerCase();
++}
++
++function _includesAny(haystack, needles) {
++  const h = _normText(haystack);
++  for (const n of needles) {
++    const nn = _normText(n);
++    if (!nn) continue;
++    if (h.includes(nn)) return true;
++  }
++  return false;
++}
++
++function _firstVisible(selector) {
++  const els = Array.from(document.querySelectorAll(selector));
++  return els.find(isVisible) || null;
++}
++
++function _collectUnique(els) {
++  const out = [];
++  const seen = new Set();
++  for (const el of els) {
++    if (!el) continue;
++    if (seen.has(el)) continue;
++    seen.add(el);
++    out.push(el);
++  }
++  return out;
++}
++
++function _btnLabelText(btn) {
++  if (!btn) return '';
++  const aria = _normText(btn.getAttribute && btn.getAttribute('aria-label'));
++  const txt = _normText(btn.innerText || btn.textContent || '');
++  return `${aria} ${txt}`.trim();
++}
++
++function detectAiStudioGenerating() {
++  const STOP_WORDS = [
++    'stop', 'cancel', 'abort',
++    '중지', '정지', '중단', '취소'
++  ];
++  const STOP_ICON_WORDS = ['stop', 'cancel', 'block', 'close'];
++
++  // 1) run-button 주변 버튼 텍스트/aria-label 기반
++  const runWrapper = document.querySelector('run-button');
++  const preferredButtons = runWrapper
++    ? Array.from(runWrapper.querySelectorAll('button, [role="button"]'))
++    : [];
++
++  const globalButtons = Array.from(document.querySelectorAll(
++    'run-button button, button.run-button, button[aria-label], div[role="button"][aria-label]'
++  ));
++
++  const candidates = _collectUnique([...preferredButtons, ...globalButtons]);
++  for (const btn of candidates) {
++    if (!isVisible(btn)) continue;
++    const label = _btnLabelText(btn);
++    if (_includesAny(label, STOP_WORDS)) return true;
++  }
++
++  // 2) 아이콘 기반 (AI Studio는 mat-icon이 없거나 material-symbols-outlined만 쓰는 경우가 있음)
++  const iconSelectors = [
++    'run-button mat-icon',
++    'run-button .material-symbols-outlined',
++    'div.right-side mat-icon',
++    'div.right-side .material-symbols-outlined',
++  ];
++  for (const sel of iconSelectors) {
++    const icons = Array.from(document.querySelectorAll(sel)).filter(isVisible);
++    for (const icon of icons) {
++      const t = _normText(icon.innerText || icon.textContent || '');
++      if (_includesAny(t, STOP_ICON_WORDS)) return true;
++    }
++  }
++
++  // 3) 로딩/프로그레스 표시
++  // - role=progressbar 는 프레임워크/버전이 달라도 비교적 안정적
++  // - 일부 빌드에서는 mat-progress-spinner/linear-progress 등을 사용
++  const progress = _firstVisible(
++    'run-button [role="progressbar"], [role="progressbar"], mat-progress-bar, mat-progress-spinner, .spinner, .loading'
++  );
++  if (progress) return true;
++
++  // 4) busy 플래그
++  const busy = _firstVisible(
++    'ms-autoscroll-container [aria-busy="true"], ms-chat-turn [aria-busy="true"], [data-generating="true"], [data-streaming="true"]'
++  );
++  if (busy) return true;
++
++  return false;
++}
+ // 탭 제목(Title)에 배지(이모지) 달기 - 아이콘 바로 옆에 표시됨
+ function updateTitleBadge() {
+   // 1. 현재 제목 가져오기
+@@ -86,16 +191,7 @@
+     currentlyGenerating = Array.from(btns).some(btn => isVisible(btn));
+   } 
+   else if (platform === 'aistudio') {
+-    // AI Studio:
+-    // 1. Google Material Icon 자체가 'stop', 'cancel', 'block' 인지 확인 (가장 확실함)
+-    const icons = Array.from(document.querySelectorAll('mat-icon'));
+-    const hasStopIcon = icons.some(icon => {
+-      const iconName = icon.innerText.trim().toLowerCase();
+-      return ['stop', 'cancel', 'block', 'close'].includes(iconName) && isVisible(icon);
+-    });
+-    // 2. 로딩바 확인
+-    const progressBar = document.querySelector('mat-progress-bar');
+-    currentlyGenerating = hasStopIcon || isVisible(progressBar);
++    currentlyGenerating = detectAiStudioGenerating();
+   } 
+   else if (platform === 'claude') {
+     // Claude: 버튼 텍스트에 "Stop"이 포함되어 있는지 확인
+```
+
+### 요약
+
+* 흰색만 뜨는 건 **초기 상태 전송은 항상 되는데**, AI Studio에서 **“생성중” 감지 셀렉터가 틀려서** 🟠/🟢로 못 넘어가서임.
+* 패치로 AI Studio를 **`run-button`/Stop 버튼(aria-label, 텍스트, 아이콘, progress, aria-busy)** 기반으로 감지하게 바꿔서 🟠/🟢 정상 동작하게 함.
+
+[1]: https://www.scribd.com/document/917009549/ai-studio-enhanced "Ai Studio Enhanced | PDF"
+
+
+(참고: 이 파일은 분석된 소스 코드가 포함되지 않은 상태로 저장되었습니다.)

@@ -1,0 +1,82 @@
+[REQUEST]
+대부분 **체감 렉은 거의 없을 확률이 높아.** 이유가 몇 개 있어:
+
+### 1) DOM 감시는 “무한폭주” 안 하게 이미 브레이크가 걸려있음
+
+content 쪽에서 `MutationObserver`가 아무리 많이 튀어도, 실제로 `checkStatus()`를 바로바로 돌리지 않고
+`scheduleCheck()`가 **최소 간격(MIN_CHECK_GAP_MS=250ms)** 으로 **디바운스** 걸어놨어.
+즉, 최악에도 초당 4번 정도로 상한이 잡혀있고(보통은 훨씬 적음), 그마저도 selector 몇 개 확인하는 수준이라 부담이 크지 않아.
+
+또한 폴링도 `CHECK_INTERVAL_MS=1200ms`로 **1.2초에 한 번**이라 과하지 않아.
+
+### 2) background 쪽 주기 확인은 “1분 단위”라서 비용 거의 0
+
+`chrome.alarms`로 1분마다 한 번 정도 탭 목록 보고, 메시지 한 번 던지는 정도면 CPU/메모리 영향은 사실상 미미해.
+
+### 3) “탭 잠깐 활성화(nudge)”는 성능 문제가 아니라 UX 문제
+
+이건 CPU를 먹어서 렉이 걸리는 게 아니라, **화면이 잠깐 전환될 수 있는** 게 핵심이야.
+그래서 내가 기본을 **Idle일 때만** 하도록 묶어놨고, 쿨다운(30초)도 넣어둔 거고.
+
+---
+
+## 그래도 “느려질 수 있는” 케이스를 솔직히 말하면
+
+* **Gemini 같은 페이지가 DOM 변경이 엄청 많고**,
+* **탭을 많이(수십 개) 열어두고**,
+* 그 탭들이 전부 감시 대상이며 동시에 계속 변하는 상황이면
+  content script의 observer 이벤트가 많이 오긴 해.
+  다만 너 코드 구조상 `scheduleCheck()` 디바운스로 **실제 검사 호출이 제한**되기 때문에 “탭이 뚝뚝 끊긴다” 수준으로 가기 쉽진 않아.
+
+---
+
+## 센스 있게 “보험”까지 들어가고 싶으면 (추가 최적화 패치)
+
+내가 준 패치에서 `setDeepEnabled(true)`를 “모든 감시 사이트”에 켜버리면, Gemini 아닌 곳에서도 shadow root 감시 루프가 돌 수 있어.
+**Gemini일 때만 deep 감시를 켜도록** 바꾸면 더 안전해(성능/리소스 측면에서 깔끔).
+
+원래 내가 준 패치 기준으로, 아래처럼 바꾸면 돼:
+
+```diff
+diff -ruN sources/src/content.js sources/src/content.js
+--- sources/src/content.js
++++ sources/src/content.js
+@@ -341,6 +341,14 @@
+   document.addEventListener('visibilitychange', scheduleCheck);
+ }
++
++function shouldEnableDeepForSite(site) {
++  // shadow DOM deep-scan / deep-observe는 Gemini 완료 감지 보강용이 핵심이라
++  // 기본은 Gemini에서만 켠다.
++  const mode = site?.detection || site?.key || '';
++  return mode === 'gemini' || site?.key === 'gemini';
++}
++
+ function startMonitoring(site) {
+   if (monitoring && activeSite?.key === site?.key) return;
+   stopMonitoring();
+@@ -350,7 +358,10 @@
+   completionStatus = 'idle';
+   hasSentInitialState = false;
+   // "백그라운드 탭"에서도 Gemini 완료 감지가 가능하도록
+-  setDeepEnabled(true);
++  // (다른 사이트까지 deep를 켜면 쓸데없는 리소스가 늘 수 있으니)
++  // Gemini일 때만 켠다.
++  setDeepEnabled(shouldEnableDeepForSite(site));
+   bindHandlersOnce();
+   // DOM 변화를 감지하여 체크 실행
+   _observer = new MutationObserver(() => {
+```
+
+이렇게 하면 **Gemini가 아닌 탭에서는 deep observer/scan 자체가 꺼져서** 더 가벼워져.
+
+---
+
+### 요약
+
+* 지금 구조는 **디바운스(250ms), 폴링(1.2s), 알람(1min)** 으로 이미 상한이 있어서 **렉 가능성 낮음**.
+* 체감 이슈가 생긴다면 대부분 “성능”보다 **탭 전환(nudge) UX** 쪽일 확률이 큼(그래서 Idle일 때만).
+* 더 안전하게 가려면 **deep 감시는 Gemini에서만 켜는 패치**(위 diff)까지 넣으면 리소스 낭비를 더 줄일 수 있음.
+
+
+(참고: 이 파일은 분석된 소스 코드가 포함되지 않은 상태로 저장되었습니다.)

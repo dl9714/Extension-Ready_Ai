@@ -1,0 +1,167 @@
+[REQUEST]
+```diff
+diff -ruN a/sources/src/background.js b/sources/src/background.js
+--- a/sources/src/background.js	2026-02-11 13:14:16.000000000 +0000
++++ b/sources/src/background.js	2026-02-11 04:21:51.208286065 +0000
+@@ -4,14 +4,53 @@
+ //   - ORANGE: 생성중
+ //   - GREEN : 생성완료(클릭·스크롤로 확인 전)
+ let tabStates = {}; // { tabId: { status: 'WHITE' | 'ORANGE' | 'GREEN', platform: '' } }
+-let settings = { dndMode: false };
++let settings = { dndMode: false, badgeEnabled: true };
++
++function safeActionCall(callResult) {
++  // Chrome MV3 환경에 따라 promise/void 둘 다 올 수 있어서 안전하게 처리
++  try {
++    Promise.resolve(callResult).catch(() => {});
++  } catch (_) {}
++}
++
++function clearBadgesForAllTabs() {
++  // 배지 OFF 시, "이전에 이미 찍혀 있던" 배지도 남지 않도록 전체 탭 기준으로 지움
++  chrome.tabs.query({}, (tabs) => {
++    for (const t of tabs) {
++      if (!t || typeof t.id !== 'number') continue;
++      safeActionCall(chrome.action.setBadgeText({ text: '', tabId: t.id }));
++    }
++  });
++}
++
++function refreshTrackedTabs() {
++  // 현재 상태를 알고 있는 탭(= tabStates)에 대해서만 아이콘/배지를 다시 반영
++  for (const id of Object.keys(tabStates)) {
++    const tabId = parseInt(id, 10);
++    if (!Number.isFinite(tabId)) continue;
++    updateIcon(tabId);
++  }
++}
++
+ // 초기 설정 로드
+-chrome.storage.local.get(['dndMode'], (res) => {
+-  if (res.dndMode) settings.dndMode = res.dndMode;
++chrome.storage.local.get(['dndMode', 'badgeEnabled'], (res) => {
++  if (typeof res.dndMode === 'boolean') settings.dndMode = res.dndMode;
++  if (typeof res.badgeEnabled === 'boolean') settings.badgeEnabled = res.badgeEnabled;
++  if (settings.badgeEnabled === false) clearBadgesForAllTabs();
+ });
++
+ // 설정 변경 감지 (Popup에서 변경 시)
+ chrome.storage.onChanged.addListener((changes) => {
+   if (changes.dndMode) settings.dndMode = changes.dndMode.newValue;
++
++  if (changes.badgeEnabled) {
++    settings.badgeEnabled = changes.badgeEnabled.newValue;
++    if (settings.badgeEnabled === false) {
++      clearBadgesForAllTabs();
++    } else {
++      refreshTrackedTabs();
++    }
++  }
+ });
+ // 아이콘 업데이트 함수
+ function updateIcon(tabId) {
+@@ -42,13 +81,21 @@
+       break;
+   }
+   // 아이콘 및 배지 적용
+-  chrome.action.setIcon({ path: iconPath, tabId: tabId }).catch(() => {});
+-  chrome.action.setBadgeText({ text: badgeText, tabId: tabId });
+-  chrome.action.setBadgeBackgroundColor({ color: badgeBg, tabId: tabId });
++  safeActionCall(chrome.action.setIcon({ path: iconPath, tabId: tabId }));
++
++  // 배지 표시 OFF면 "완전 제거" (텍스트를 비우면 배지가 사라짐)
++  if (!settings.badgeEnabled) {
++    safeActionCall(chrome.action.setBadgeText({ text: '', tabId: tabId }));
++    return;
++  }
++
++  safeActionCall(chrome.action.setBadgeText({ text: badgeText, tabId: tabId }));
++  safeActionCall(chrome.action.setBadgeBackgroundColor({ color: badgeBg, tabId: tabId }));
++
+   // MV3: 배지 텍스트 색상 지정 가능(지원 안 하면 무시)
+   if (chrome.action.setBadgeTextColor) {
+     try {
+-      chrome.action.setBadgeTextColor({ color: badgeFg, tabId: tabId });
++      safeActionCall(chrome.action.setBadgeTextColor({ color: badgeFg, tabId: tabId }));
+     } catch (_) {}
+   }
+ }
+@@ -125,4 +172,4 @@
+   // (클릭/스크롤로만 ⚪로 전환)
+ });
+ // 탭 닫힘 정리
+-chrome.tabs.onRemoved.addListener((tabId) => { delete tabStates[tabId]; });
+\ No newline at end of file
++chrome.tabs.onRemoved.addListener((tabId) => { delete tabStates[tabId]; });
+
+diff -ruN a/sources/src/popup.html b/sources/src/popup.html
+--- a/sources/src/popup.html	2026-02-11 13:14:16.000000000 +0000
++++ b/sources/src/popup.html	2026-02-11 04:21:41.660486652 +0000
+@@ -8,7 +8,7 @@
+     .header img { width: 24px; height: 24px; }
+     .header h2 { margin: 0; font-size: 16px; }
+     .option { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+-    .desc { font-size: 11px; color: #666; line-height: 1.4; }
++    .desc { font-size: 11px; color: #666; line-height: 1.4; margin-bottom: 14px; }
+     /* Toggle Switch Style */
+     .switch { position: relative; display: inline-block; width: 34px; height: 20px; }
+     .switch input { opacity: 0; width: 0; height: 0; }
+@@ -30,7 +30,16 @@
+       <span class="slider"></span>
+     </label>
+   </div>
+-  <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (아이콘 배지는 계속 표시됨)</div>
++  <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (배지 표시 여부는 아래 옵션으로 조절)</div>
++
++  <div class="option">
++    <span>아이콘 배지 표시 🎯</span>
++    <label class="switch">
++      <input type="checkbox" id="badge-toggle">
++      <span class="slider"></span>
++    </label>
++  </div>
++  <div class="desc">활성화 시 확장 프로그램 아이콘에 상태(⚪/🟠/🟢)를 배지 색으로 표시합니다.</div>
+   <script src="popup.js"></script>
+ </body>
+-</html>
+\ No newline at end of file
++</html>
+
+diff -ruN a/sources/src/popup.js b/sources/src/popup.js
+--- a/sources/src/popup.js	2026-02-11 13:14:16.000000000 +0000
++++ b/sources/src/popup.js	2026-02-11 04:21:46.289534980 +0000
+@@ -1,11 +1,20 @@
+ document.addEventListener('DOMContentLoaded', () => {
+   const dndToggle = document.getElementById('dnd-toggle');
++  const badgeToggle = document.getElementById('badge-toggle');
++
+   // 저장된 설정 불러오기
+-  chrome.storage.local.get(['dndMode'], (result) => {
+-    dndToggle.checked = result.dndMode || false;
++  chrome.storage.local.get(['dndMode', 'badgeEnabled'], (result) => {
++    dndToggle.checked = !!result.dndMode;
++    // badgeEnabled는 기본값이 true
++    badgeToggle.checked = result.badgeEnabled !== false;
+   });
++
+   // 설정 변경 시 저장
+   dndToggle.addEventListener('change', () => {
+     chrome.storage.local.set({ dndMode: dndToggle.checked });
+   });
+-});
+\ No newline at end of file
++
++  badgeToggle.addEventListener('change', () => {
++    chrome.storage.local.set({ badgeEnabled: badgeToggle.checked });
++  });
++});
+```
+
+### 요약
+
+* 팝업에 **“아이콘 배지 표시 🎯” 토글** 추가(`badgeEnabled` 저장).
+* 배지 OFF면 `chrome.action.setBadgeText('')`로 **완전 제거**(기존에 남아있던 배지도 전체 탭에서 일괄 제거).
+* 배지 ON으로 바꾸면 현재 추적 중인 탭들에 상태를 다시 반영.
+
+
+(참고: 이 파일은 분석된 소스 코드가 포함되지 않은 상태로 저장되었습니다.)

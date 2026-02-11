@@ -1,86 +1,490 @@
-// 상태 관리 변수
-let tabStates = {}; // { tabId: { status: 'IDLE' | 'GENERATING' | 'COMPLETED_UNREAD' | 'COMPLETED_READ', platform: '' } }
-let settings = { dndMode: false };
+// sites registry (builtin/custom)
+try {
+  // background(service_worker)는 extension root 기준 경로가 안전함
+  importScripts('src/sites.js');
+} catch (_) {
+  // ignore
+}
+
+// tabStates 구조(확장됨):
+// {
+//   [tabId]: {
+//     status: 'WHITE' | 'ORANGE' | 'GREEN',
+//     platform: string,
+//     siteName?: string,
+//     windowId?: number,
+//     lastUpdateAt?: number,
+//     orangeSinceAt?: number,
+//     lastNudgeAt?: number,
+//   }
+// }
+let tabStates = {};
+
+// 프레임별 상태(iframe 대응)
+// - all_frames=true + (특정 사이트는 UI가 cross-origin iframe에 있을 수 있음)
+// - 따라서 탭 단위 상태는 "프레임들 중 하나라도 생성중이면 ORANGE" 로 계산한다.
+// - 프레임 하나가 계속 false를 보내서 ORANGE->GREEN을 조기 트리거하는 문제를 막는다.
+let frameStates = {}; // { tabId: { frameId: { isGenerating, platform, siteName, ts } } }
+
+// ===== Settings (storage.local) =====
+const STORAGE_KEYS = {
+  DND_MODE: 'dndMode',
+  BADGE_ENABLED: 'badgeEnabled',
+  // Gemini는 "백그라운드에서는 완료 UI가 늦게 갱신" 되는 케이스가 있어서,
+  // 유휴(Idle) 상태에서만 "탭을 잠깐 활성화"해서 완료를 확인하는 옵션을 추가한다.
+  GEMINI_PROBE_ENABLED: 'geminiProbeEnabled',
+  GEMINI_PROBE_PERIOD_MIN: 'geminiProbePeriodMin',
+  GEMINI_PROBE_ONLY_IDLE: 'geminiProbeOnlyIdle',
+  GEMINI_PROBE_IDLE_SEC: 'geminiProbeIdleSec',
+  GEMINI_PROBE_MIN_ORANGE_SEC: 'geminiProbeMinOrangeSec',
+};
+const GEMINI_PROBE_ALARM = 'ready_ai_gemini_probe';
+const GEMINI_PROBE_MIN_PERIOD_MIN = 1; // chrome.alarms 최소 1분
+const GEMINI_PROBE_NUDGE_COOLDOWN_MS = 30_000; // 너무 자주 탭 전환하면 거슬림
+
+let settings = {
+  dndMode: false,
+  badgeEnabled: true,
+  geminiProbeEnabled: true,
+  geminiProbePeriodMin: 1,
+  geminiProbeOnlyIdle: true,
+  geminiProbeIdleSec: 60,
+  geminiProbeMinOrangeSec: 12,
+};
+let _siteConfigCache = { enabledSites: null, customSites: [] };
+
+function getSiteConfig(cb) {
+  const sitesApi = globalThis?.ReadyAi?.sites;
+  const enabledKey = sitesApi?.STORAGE_KEYS?.ENABLED_SITES || 'enabledSites';
+  const customKey = sitesApi?.STORAGE_KEYS?.CUSTOM_SITES || 'customSites';
+
+  chrome.storage.local.get([enabledKey, customKey], (res) => {
+    const enabledSites = sitesApi?.ensureEnabledSitesObject
+      ? sitesApi.ensureEnabledSitesObject(res?.[enabledKey])
+      : (res?.[enabledKey] || {});
+    const customSites = sitesApi?.normalizeCustomSites
+      ? sitesApi.normalizeCustomSites(res?.[customKey])
+      : (res?.[customKey] || []);
+    _siteConfigCache = { enabledSites, customSites };
+    cb?.(_siteConfigCache);
+  });
+}
+// 초기 설정 로드
+
+function safeActionCall(callResult) {
+  // Chrome MV3 환경에 따라 promise/void 둘 다 올 수 있어서 안전하게 처리
+  try {
+    Promise.resolve(callResult).catch(() => {});
+  } catch (_) {}
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function clampInt(v, fallback, min, max) {
+  const n = parseInt(v, 10);
+  const out = Number.isFinite(n) ? n : fallback;
+  if (typeof min === 'number' && out < min) return min;
+  if (typeof max === 'number' && out > max) return max;
+  return out;
+}
+function clampNumber(v, fallback, min, max) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  const out = Number.isFinite(n) ? n : fallback;
+  if (typeof min === 'number' && out < min) return min;
+  if (typeof max === 'number' && out > max) return max;
+  return out;
+}
+function pTabsQuery(query) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.query(query, (tabs) => resolve(Array.isArray(tabs) ? tabs : []));
+    } catch (_) {
+      resolve([]);
+    }
+  });
+}
+function pTabsUpdate(tabId, updateProps) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.update(tabId, updateProps, (tab) => resolve(tab || null));
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+function pTabsSendMessage(tabId, message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, message, () => resolve(true));
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+function pIdleQueryState(idleSec) {
+  return new Promise((resolve) => {
+    try {
+      chrome.idle.queryState(idleSec, (state) => resolve(state || 'active'));
+    } catch (_) {
+      resolve('active');
+    }
+  });
+}
+
+function clearBadgesForAllTabs() {
+  // 배지 OFF 시, "이전에 이미 찍혀 있던" 배지도 남지 않도록 전체 탭 기준으로 지움
+  chrome.tabs.query({}, (tabs) => {
+    for (const t of tabs) {
+      if (!t || typeof t.id !== 'number') continue;
+      safeActionCall(chrome.action.setBadgeText({ text: '', tabId: t.id }));
+    }
+  });
+}
+
+function refreshTrackedTabs() {
+  // 현재 상태를 알고 있는 탭(= tabStates)에 대해서만 아이콘/배지를 다시 반영
+  for (const id of Object.keys(tabStates)) {
+    const tabId = parseInt(id, 10);
+    if (!Number.isFinite(tabId)) continue;
+    updateIcon(tabId);
+  }
+}
+
+function ensureGeminiProbeAlarm() {
+  // 설정값이 바뀌었을 때, alarms를 즉시 반영
+  const enabled = !!settings.geminiProbeEnabled;
+  if (!enabled) {
+    try { chrome.alarms.clear(GEMINI_PROBE_ALARM); } catch (_) {}
+    return;
+  }
+  const periodMin = clampNumber(settings.geminiProbePeriodMin, 1, GEMINI_PROBE_MIN_PERIOD_MIN, 60);
+  try {
+    chrome.alarms.create(GEMINI_PROBE_ALARM, { periodInMinutes: periodMin });
+  } catch (_) {}
+}
 
 // 초기 설정 로드
-chrome.storage.local.get(['dndMode'], (res) => {
-  if (res.dndMode) settings.dndMode = res.dndMode;
+chrome.storage.local.get([
+  STORAGE_KEYS.DND_MODE,
+  STORAGE_KEYS.BADGE_ENABLED,
+  STORAGE_KEYS.GEMINI_PROBE_ENABLED,
+  STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN,
+  STORAGE_KEYS.GEMINI_PROBE_ONLY_IDLE,
+  STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC,
+  STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC,
+], (res) => {
+  if (typeof res[STORAGE_KEYS.DND_MODE] === 'boolean') settings.dndMode = res[STORAGE_KEYS.DND_MODE];
+  if (typeof res[STORAGE_KEYS.BADGE_ENABLED] === 'boolean') settings.badgeEnabled = res[STORAGE_KEYS.BADGE_ENABLED];
+  if (typeof res[STORAGE_KEYS.GEMINI_PROBE_ENABLED] === 'boolean') settings.geminiProbeEnabled = res[STORAGE_KEYS.GEMINI_PROBE_ENABLED];
+  if (typeof res[STORAGE_KEYS.GEMINI_PROBE_ONLY_IDLE] === 'boolean') settings.geminiProbeOnlyIdle = res[STORAGE_KEYS.GEMINI_PROBE_ONLY_IDLE];
+  if (res[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN] != null) settings.geminiProbePeriodMin = clampNumber(res[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN], 1, 1, 60);
+  if (res[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC] != null) settings.geminiProbeIdleSec = clampInt(res[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC], 60, 15, 3600);
+  if (res[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC] != null) settings.geminiProbeMinOrangeSec = clampInt(res[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC], 12, 3, 600);
+
+  if (settings.badgeEnabled === false) clearBadgesForAllTabs();
+  ensureGeminiProbeAlarm();
 });
 
 // 설정 변경 감지 (Popup에서 변경 시)
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.dndMode) settings.dndMode = changes.dndMode.newValue;
-});
-
-// 아이콘 업데이트 함수
-function updateIcon(tabId) {
-  const state = tabStates[tabId]?.status || 'IDLE';
-  let iconPath = 'assets/bell_profile.png'; // 기본/IDLE/READ
-  let badgeText = '';
-  let badgeColor = '#000';
-
-  switch (state) {
-    case 'GENERATING':
-      iconPath = 'assets/bell_pending.png'; // 주황 (진행중)
-      badgeText = '...';
-      badgeColor = '#FFA500';
-      break;
-    case 'COMPLETED_UNREAD':
-      iconPath = 'assets/bell_unread.png'; // 노랑 (미확인)
-      badgeText = '!';
-      badgeColor = '#FFD700';
-      break;
-    case 'COMPLETED_READ':
-      iconPath = 'assets/bell_profile.png'; // 녹색/확인됨 (기본으로 복귀)
-      badgeText = 'OK';
-      badgeColor = '#32CD32';
-      break;
+  if (changes[STORAGE_KEYS.DND_MODE]) settings.dndMode = changes[STORAGE_KEYS.DND_MODE].newValue;
+  if (changes.enabledSites || changes.customSites) {
+    // 모니터링 대상에서 빠진 탭은 상태를 지워서 "등록된 사이트만" 관리되도록.
+    getSiteConfig(() => purgeDisabledTabs());
+  }
+  if (changes[STORAGE_KEYS.BADGE_ENABLED]) {
+    settings.badgeEnabled = changes[STORAGE_KEYS.BADGE_ENABLED].newValue;
+    if (settings.badgeEnabled === false) {
+      clearBadgesForAllTabs();
+    } else {
+      refreshTrackedTabs();
+    }
   }
 
-  // 아이콘 및 배지 적용
-  chrome.action.setIcon({ path: iconPath, tabId: tabId }).catch(() => {});
-  chrome.action.setBadgeText({ text: badgeText, tabId: tabId });
-  chrome.action.setBadgeBackgroundColor({ color: badgeColor, tabId: tabId });
+  // Gemini probe settings
+  if (changes[STORAGE_KEYS.GEMINI_PROBE_ENABLED]) settings.geminiProbeEnabled = !!changes[STORAGE_KEYS.GEMINI_PROBE_ENABLED].newValue;
+  if (changes[STORAGE_KEYS.GEMINI_PROBE_ONLY_IDLE]) settings.geminiProbeOnlyIdle = !!changes[STORAGE_KEYS.GEMINI_PROBE_ONLY_IDLE].newValue;
+  if (changes[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN]) settings.geminiProbePeriodMin = clampNumber(changes[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN].newValue, 1, 1, 60);
+  if (changes[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC]) settings.geminiProbeIdleSec = clampInt(changes[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC].newValue, 60, 15, 3600);
+  if (changes[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC]) settings.geminiProbeMinOrangeSec = clampInt(changes[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC].newValue, 12, 3, 600);
+
+  // 관련 설정이 바뀌었으면 알람 갱신
+  if (
+    changes[STORAGE_KEYS.GEMINI_PROBE_ENABLED] ||
+    changes[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN]
+  ) {
+    ensureGeminiProbeAlarm();
+  }
+});
+
+function resolveSiteForUrl(url) {
+  const sitesApi = globalThis?.ReadyAi?.sites;
+  if (!sitesApi?.resolveSiteFromConfig) return null;
+  try {
+    return sitesApi.resolveSiteFromConfig(url, _siteConfigCache.enabledSites, _siteConfigCache.customSites);
+  } catch (_) {
+    return null;
+  }
+}
+function isGeminiSite(site) {
+  if (!site) return false;
+  // builtin: key === 'gemini'
+  if (site.key === 'gemini') return true;
+  // custom: detection === 'gemini'
+  if (site.detection === 'gemini') return true;
+  return false;
 }
 
+async function tickGeminiProbe() {
+  // 1) 설정 OFF면 아무 것도 안 함
+  if (!settings.geminiProbeEnabled) return;
+
+  // 2) 현재 탭들 중 "Gemini로 감지되는" 탭만 골라서,
+  //    content script에 "force_check"를 보내서 우선 갱신을 시도.
+  const tabs = await pTabsQuery({});
+  const now = Date.now();
+
+  /** @type {{tab:any, site:any, orangeAgeSec:number}[]} */
+  const candidates = [];
+
+  for (const t of tabs) {
+    if (!t || typeof t.id !== 'number') continue;
+    const url = t.url || '';
+    if (!url) continue;
+    if (!isMonitoredUrl(url)) continue;
+
+    const site = resolveSiteForUrl(url);
+    if (!isGeminiSite(site)) continue;
+
+    // 백그라운드에서 실행되는 content script에 "상태 한번 더 체크" 요청
+    await pTabsSendMessage(t.id, { action: 'force_check', reason: 'gemini_probe_tick' });
+
+    // 탭을 "잠깐 활성화"시키는 nudge 후보(= ORANGE가 오래 유지되는 Gemini 탭)
+    const st = tabStates[t.id];
+    if (!st || st.status !== 'ORANGE') continue;
+
+    const orangeSinceAt = st.orangeSinceAt || st.lastUpdateAt || now;
+    const orangeAgeSec = (now - orangeSinceAt) / 1000;
+    const lastNudgeAt = st.lastNudgeAt || 0;
+    const cooledDown = (now - lastNudgeAt) >= GEMINI_PROBE_NUDGE_COOLDOWN_MS;
+    const oldEnough = orangeAgeSec >= (settings.geminiProbeMinOrangeSec || 12);
+    const notAlreadyActive = !t.active;
+
+    if (cooledDown && oldEnough && notAlreadyActive) {
+      candidates.push({ tab: t, site, orangeAgeSec });
+    }
+  }
+
+  // 3) "유휴일 때만" 옵션이면, active 상태에서는 절대 탭 전환 안 함
+  let allowNudge = true;
+  if (settings.geminiProbeOnlyIdle) {
+    const idleSec = clampInt(settings.geminiProbeIdleSec, 60, 15, 3600);
+    const state = await pIdleQueryState(idleSec);
+    allowNudge = (state === 'idle' || state === 'locked');
+  }
+  if (!allowNudge) return;
+
+  // 4) 후보 중 "가장 오래 ORANGE"인 탭 1개만 nudge
+  if (!candidates.length) return;
+  candidates.sort((a, b) => b.orangeAgeSec - a.orangeAgeSec);
+  const pick = candidates[0];
+  if (!pick?.tab?.id) return;
+  await nudgeTabForGeminiCompletion(pick.tab.id, pick.tab.windowId);
+}
+
+async function nudgeTabForGeminiCompletion(targetTabId, windowId) {
+  // 안전장치: 현재 tabStates가 ORANGE가 아니면 굳이 안 건드린다.
+  const st = tabStates[targetTabId];
+  if (!st || st.status !== 'ORANGE') {
+    await pTabsSendMessage(targetTabId, { action: 'force_check', reason: 'gemini_probe_nudge_skipped' });
+    return;
+  }
+
+  // 같은 윈도우에서 원래 활성 탭을 저장했다가 복구
+  const activeTabs = await pTabsQuery({ windowId, active: true });
+  const restoreTabId = (activeTabs && activeTabs[0] && typeof activeTabs[0].id === 'number') ? activeTabs[0].id : null;
+
+  // 1) Gemini 탭을 활성화
+  await pTabsUpdate(targetTabId, { active: true });
+  await sleep(320);
+
+  // 2) 활성화된 김에 강제 체크 한 번 더
+  await pTabsSendMessage(targetTabId, { action: 'force_check', reason: 'gemini_probe_nudge' });
+  await sleep(320);
+
+  // 3) 원래 탭으로 복구
+  if (restoreTabId != null && restoreTabId !== targetTabId) {
+    await pTabsUpdate(restoreTabId, { active: true });
+  }
+
+  // 4) nudge 시간 기록(쿨다운)
+  if (tabStates[targetTabId]) {
+    tabStates[targetTabId].lastNudgeAt = Date.now();
+  }
+}
+
+try {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== GEMINI_PROBE_ALARM) return;
+    safeActionCall(tickGeminiProbe());
+  });
+} catch (_) {}
+
+function updateIcon(tabId) {
+  const state = tabStates[tabId]?.status || 'WHITE';
+
+  // 아이콘은 기존 리소스를 재사용(뱃지 색으로 구분이 핵심)
+  let iconPath = 'assets/bell_profile.png';
+
+  // 배지는 "색"이 중요. 텍스트는 숨기기 위해 '1'을 쓰고 글자색을 배경과 동일하게 맞춘다.
+  // (공백만 넣으면 뱃지가 안 뜨는 브라우저/환경이 있어 안전장치)
+  let badgeText = '1';
+  let badgeBg = '#FFFFFF';
+  let badgeFg = '#FFFFFF';
+
+  switch (state) {
+    case 'ORANGE':
+      iconPath = 'assets/bell_pending.png';
+      badgeBg = '#FFA500';
+      badgeFg = '#FFA500';
+      break;
+    case 'GREEN':
+      iconPath = 'assets/bell_unread.png';
+      badgeBg = '#7CFC00'; // 연두
+      badgeFg = '#7CFC00';
+      break;
+    case 'WHITE':
+    default:
+      iconPath = 'assets/bell_profile.png';
+      badgeBg = '#FFFFFF';
+      badgeFg = '#FFFFFF';
+      break;
+  }
+  // 아이콘 및 배지 적용
+  safeActionCall(chrome.action.setIcon({ path: iconPath, tabId: tabId }));
+
+  // 배지 표시 OFF면 "완전 제거" (텍스트를 비우면 배지가 사라짐)
+  if (!settings.badgeEnabled) {
+    safeActionCall(chrome.action.setBadgeText({ text: '', tabId: tabId }));
+    return;
+  }
+
+  safeActionCall(chrome.action.setBadgeText({ text: badgeText, tabId: tabId }));
+  safeActionCall(chrome.action.setBadgeBackgroundColor({ color: badgeBg, tabId: tabId }));
+  // MV3: 배지 텍스트 색상 지정 가능(지원 안 하면 무시)
+  if (chrome.action.setBadgeTextColor) {
+    try {
+      safeActionCall(chrome.action.setBadgeTextColor({ color: badgeFg, tabId: tabId }));
+    } catch (_) {}
+  }
+}
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab) return;
   const tabId = sender.tab.id;
+  const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
 
-  if (message.action === "status_update") {
-    const prevState = tabStates[tabId]?.status || 'IDLE';
-    const newState = message.isGenerating ? 'GENERATING' : 'IDLE';
+  // content script(iframe)에서 top tab URL이 필요할 때 사용
+  if (message.action === 'get_tab_url') {
+    sendResponse({ url: sender.tab?.url || '' });
+    return;
+  }
 
-    // 1. 생성 시작 (IDLE -> GENERATING)
-    if (prevState === 'IDLE' && newState === 'GENERATING') {
-      tabStates[tabId] = { status: 'GENERATING', platform: message.platform };
-      updateIcon(tabId);
+  function upsertFrameState(isGenerating, platform, siteName) {
+    const now = Date.now();
+    if (!frameStates[tabId]) frameStates[tabId] = {};
+    frameStates[tabId][frameId] = {
+      isGenerating: !!isGenerating,
+      platform: platform || '',
+      siteName: siteName || '',
+      ts: now,
+    };
+  }
+
+  function getAggregatedState() {
+    const frames = frameStates[tabId] || {};
+    const entries = Object.values(frames);
+    // any generating?
+    const anyGen = entries.some((e) => e?.isGenerating);
+    // platform/siteName: generating 프레임 우선, 아니면 가장 최근
+    let pick = null;
+    if (anyGen) {
+      pick = entries.find((e) => e?.isGenerating) || null;
     }
-    // 2. 생성 완료 (GENERATING -> IDLE)
-    else if (prevState === 'GENERATING' && newState === 'IDLE') {
-      // 현재 탭을 보고 있는지 확인
+    if (!pick) {
+      let best = null;
+      for (const e of entries) {
+        if (!e) continue;
+        if (!best || (e.ts || 0) > (best.ts || 0)) best = e;
+      }
+      pick = best;
+    }
+    return {
+      anyGen,
+      platform: pick?.platform || '',
+      siteName: pick?.siteName || '',
+    };
+  }
+
+  if (message.action === 'status_update') {
+    const platform = message.platform;
+    const siteName = message.siteName;
+    upsertFrameState(message.isGenerating, platform, siteName);
+
+    const agg = getAggregatedState();
+    const prev = tabStates[tabId]?.status;
+
+    // 1) "프레임 중 하나라도" 생성중이면 ORANGE
+    if (agg.anyGen) {
+      tabStates[tabId] = { status: 'ORANGE', platform: agg.platform || platform };
+      updateIcon(tabId);
+      return;
+    }
+
+    // 2) 어떤 프레임도 생성중이 아니면:
+    //    - ORANGE -> GREEN (완료)
+    //    - (첫 보고) -> WHITE (아무 질문 없음)
+    //    - GREEN/WHITE 유지
+    if (!prev) {
+      tabStates[tabId] = { status: 'WHITE', platform: agg.platform || platform };
+      updateIcon(tabId);
+      return;
+    }
+    if (prev === 'ORANGE') {
+      tabStates[tabId] = { status: 'GREEN', platform: agg.platform || platform };
+      updateIcon(tabId);
+      // 탭이 현재 비활성이면(다른 탭 보고 있으면) 알림을 보낼 수 있음
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const isActiveTab = tabs.length > 0 && tabs[0].id === tabId;
-        
-        if (isActiveTab) {
-          tabStates[tabId] = { status: 'COMPLETED_READ', platform: message.platform };
-        } else {
-          tabStates[tabId] = { status: 'COMPLETED_UNREAD', platform: message.platform };
-          // 방해 금지 모드가 아닐 때만 알림
-          if (!settings.dndMode) sendNotification(message.platform);
-        }
-        updateIcon(tabId);
+        if (!isActiveTab && !settings.dndMode) sendNotification(agg.platform || platform, agg.siteName || siteName);
       });
+      return;
+    }
+    if (prev === 'GREEN' || prev === 'WHITE') {
+      tabStates[tabId].platform = agg.platform || platform;
+      updateIcon(tabId);
+      return;
+    }
+  }
+
+  // content 쪽 사용자 상호작용(클릭/스크롤)로 🟢 -> ⚪
+  if (message.action === 'user_activity') {
+    const prev = tabStates[tabId]?.status;
+    if (prev === 'GREEN') {
+      tabStates[tabId].status = 'WHITE';
+      updateIcon(tabId);
     }
   }
 });
 
-function sendNotification(platform) {
-  let title = "AI 답변 완료";
-  if (platform === 'chatgpt') title = "ChatGPT 답변 완료";
-  else if (platform === 'gemini') title = "Gemini 답변 완료";
-  else if (platform === 'aistudio') title = "AI Studio 답변 완료";
-
+function sendNotification(platform, siteName) {
+  let title = siteName ? `${siteName} 답변 완료` : "AI 답변 완료";
+  // 호환/백업: siteName이 없을 때만 플랫폼별로 치환
+  if (!siteName) {
+    if (platform === 'chatgpt') title = "ChatGPT 답변 완료";
+    else if (platform === 'gemini') title = "Gemini 답변 완료";
+    else if (platform === 'aistudio') title = "AI Studio 답변 완료";
+    else if (platform === 'claude') title = "Claude 답변 완료";
+  }
   chrome.notifications.create({
     type: 'basic',
     iconUrl: 'assets/bell_notice.png',
@@ -92,24 +496,51 @@ function sendNotification(platform) {
 
 // 알림 클릭 시 해당 탭으로 이동
 chrome.notifications.onClicked.addListener(() => {
-  const unreadTabId = Object.keys(tabStates).find(id => tabStates[id].status === 'COMPLETED_UNREAD');
-  if (unreadTabId) {
-    const tId = parseInt(unreadTabId);
-    chrome.tabs.update(tId, { active: true });
-    chrome.windows.update(chrome.windows.WINDOW_ID_CURRENT, { focused: true });
-    tabStates[tId].status = 'COMPLETED_READ';
-    updateIcon(tId);
-  }
-});
+  const greenTabId = Object.keys(tabStates).find(id => tabStates[id].status === 'GREEN');
+  if (!greenTabId) return;
 
-// 탭 활성화(클릭) 시 읽음 처리
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  const tabId = activeInfo.tabId;
-  if (tabStates[tabId]?.status === 'COMPLETED_UNREAD') {
-    tabStates[tabId].status = 'COMPLETED_READ';
-    updateIcon(tabId);
-  }
+  const tId = parseInt(greenTabId);
+  chrome.tabs.update(tId, { active: true });
+  chrome.windows.update(chrome.windows.WINDOW_ID_CURRENT, { focused: true });
+
+  // 요구사항: 탭을 여는 것만으로는 🟢를 없애지 않는다.
+  // (클릭/스크롤로만 ⚪로 전환)
 });
 
 // 탭 닫힘 정리
-chrome.tabs.onRemoved.addListener((tabId) => { delete tabStates[tabId]; });
+chrome.tabs.onRemoved.addListener((tabId) => {
+  delete tabStates[tabId];
+  delete frameStates[tabId];
+});
+
+function isMonitoredUrl(url) {
+  if (!url || !(url.startsWith('http://') || url.startsWith('https://'))) return false;
+  const sitesApi = globalThis?.ReadyAi?.sites;
+  if (!sitesApi?.resolveSiteFromConfig) return true; // fallback
+  try {
+    const site = sitesApi.resolveSiteFromConfig(url, _siteConfigCache.enabledSites, _siteConfigCache.customSites);
+    return !!site;
+  } catch (_) {
+    return true;
+  }
+}
+
+function purgeDisabledTabs() {
+  chrome.tabs.query({}, (tabs) => {
+    for (const t of tabs) {
+      if (!t?.id) continue;
+      if (!tabStates[t.id]) continue;
+      const url = t.url || '';
+      if (!url) continue;
+      if (isMonitoredUrl(url)) continue;
+
+      // 더 이상 등록된 사이트가 아니면 상태 정리 + 아이콘 흰색으로
+      delete tabStates[t.id];
+      delete frameStates[t.id];
+      updateIcon(t.id);
+    }
+  });
+}
+
+// 서비스워커 시작 시에도 한번 캐시
+getSiteConfig();

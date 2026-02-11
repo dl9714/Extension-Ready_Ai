@@ -15,7 +15,9 @@
   "permissions": [
     "storage",
     "notifications",
-    "tabs"
+    "tabs",
+    "alarms",
+    "idle"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -23,11 +25,15 @@
   "content_scripts": [
     {
       "matches": [
-        "https://chatgpt.com/*",
-        "https://gemini.google.com/*",
-        "https://aistudio.google.com/*"
+        "https://*/*",
+        "http://*/*"
       ],
-      "js": ["src/content.js"]
+      "js": [
+        "src/sites.js",
+        "src/content.js"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
     }
   ]
 }

@@ -1,0 +1,1159 @@
+[REQUEST]
+diff --git a/sources/manifest.json b/sources/manifest.json
+index 996abca..bdf0a20 100644
+--- a/sources/manifest.json
++++ b/sources/manifest.json
+@@ -23,12 +23,13 @@
+   "content_scripts": [
+     {
+       "matches": [
+-        "https://chatgpt.com/*",
+-        "https://gemini.google.com/*",
+-        "https://aistudio.google.com/*",
+-        "https://claude.ai/*"
++        "https://*/*",
++        "http://*/*"
+       ],
+-      "js": ["src/content.js"]
++      "js": [
++        "src/sites.js",
++        "src/content.js"
++      ]
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/sources/src/background.js b/sources/src/background.js
+index 53406c4..3e353cc 100644
+--- a/sources/src/background.js
++++ b/sources/src/background.js
+@@ -1,3 +1,11 @@
++// sites registry (builtin/custom)
++try {
++  // background(service_worker)는 extension root 기준 경로가 안전함
++  importScripts('src/sites.js');
++} catch (_) {
++  // ignore
++}
++
+ // 상태 관리 변수
+ // 요구사항(3상태):
+ //   - WHITE : 아무 질문 없음 / 읽음 / (🟢에서 클릭·스크롤로 확인 후)
+@@ -5,6 +13,24 @@
+ //   - GREEN : 생성완료(클릭·스크롤로 확인 전)
+ let tabStates = {}; // { tabId: { status: 'WHITE' | 'ORANGE' | 'GREEN', platform: '' } }
+ let settings = { dndMode: false };
++let _siteConfigCache = { enabledSites: null, customSites: [] };
++
++function getSiteConfig(cb) {
++  const sitesApi = globalThis?.ReadyAi?.sites;
++  const enabledKey = sitesApi?.STORAGE_KEYS?.ENABLED_SITES || 'enabledSites';
++  const customKey = sitesApi?.STORAGE_KEYS?.CUSTOM_SITES || 'customSites';
++
++  chrome.storage.local.get([enabledKey, customKey], (res) => {
++    const enabledSites = sitesApi?.ensureEnabledSitesObject
++      ? sitesApi.ensureEnabledSitesObject(res?.[enabledKey])
++      : (res?.[enabledKey] || {});
++    const customSites = sitesApi?.normalizeCustomSites
++      ? sitesApi.normalizeCustomSites(res?.[customKey])
++      : (res?.[customKey] || []);
++    _siteConfigCache = { enabledSites, customSites };
++    cb?.(_siteConfigCache);
++  });
++}
+ // 초기 설정 로드
+ chrome.storage.local.get(['dndMode'], (res) => {
+   if (res.dndMode) settings.dndMode = res.dndMode;
+@@ -12,7 +38,14 @@ chrome.storage.local.get(['dndMode'], (res) => {
+ // 설정 변경 감지 (Popup에서 변경 시)
+ chrome.storage.onChanged.addListener((changes) => {
+   if (changes.dndMode) settings.dndMode = changes.dndMode.newValue;
++  if (changes.enabledSites || changes.customSites) {
++    // 모니터링 대상에서 빠진 탭은 상태를 지워서 "등록된 사이트만" 관리되도록.
++    getSiteConfig(() => purgeDisabledTabs());
++  }
+ });
++
++// 서비스워커 시작 시에도 한번 캐시
++getSiteConfig();
+ // 아이콘 업데이트 함수
+ function updateIcon(tabId) {
+   const state = tabStates[tabId]?.status || 'WHITE';
+@@ -58,6 +91,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+   if (message.action === 'status_update') {
+     const prev = tabStates[tabId]?.status;
+     const platform = message.platform;
++    const siteName = message.siteName;
+     // 1) 생성중이면 무조건 ORANGE
+     if (message.isGenerating) {
+       tabStates[tabId] = { status: 'ORANGE', platform };
+@@ -79,7 +113,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+       // 탭이 현재 비활성이면(다른 탭 보고 있으면) 알림을 보낼 수 있음
+       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+         const isActiveTab = tabs.length > 0 && tabs[0].id === tabId;
+-        if (!isActiveTab && !settings.dndMode) sendNotification(platform);
++        if (!isActiveTab && !settings.dndMode) sendNotification(platform, siteName);
+       });
+       return;
+     }
+@@ -101,11 +135,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+     }
+   }
+ });
+-function sendNotification(platform) {
+-  let title = "AI 답변 완료";
+-  if (platform === 'chatgpt') title = "ChatGPT 답변 완료";
+-  else if (platform === 'gemini') title = "Gemini 답변 완료";
+-  else if (platform === 'aistudio') title = "AI Studio 답변 완료";
++function sendNotification(platform, siteName) {
++  let title = siteName ? `${siteName} 답변 완료` : "AI 답변 완료";
++  // 호환/백업: siteName이 없을 때만 플랫폼별로 치환
++  if (!siteName) {
++    if (platform === 'chatgpt') title = "ChatGPT 답변 완료";
++    else if (platform === 'gemini') title = "Gemini 답변 완료";
++    else if (platform === 'aistudio') title = "AI Studio 답변 완료";
++    else if (platform === 'claude') title = "Claude 답변 완료";
++  }
+   chrome.notifications.create({
+     type: 'basic',
+     iconUrl: 'assets/bell_notice.png',
+@@ -125,4 +163,32 @@ chrome.notifications.onClicked.addListener(() => {
+   // (클릭/스크롤로만 ⚪로 전환)
+ });
+ // 탭 닫힘 정리
+-chrome.tabs.onRemoved.addListener((tabId) => { delete tabStates[tabId]; });
+\ No newline at end of file
++chrome.tabs.onRemoved.addListener((tabId) => { delete tabStates[tabId]; });
++
++function isMonitoredUrl(url) {
++  if (!url || !(url.startsWith('http://') || url.startsWith('https://'))) return false;
++  const sitesApi = globalThis?.ReadyAi?.sites;
++  if (!sitesApi?.resolveSiteFromConfig) return true; // fallback
++  try {
++    const site = sitesApi.resolveSiteFromConfig(url, _siteConfigCache.enabledSites, _siteConfigCache.customSites);
++    return !!site;
++  } catch (_) {
++    return true;
++  }
++}
++
++function purgeDisabledTabs() {
++  chrome.tabs.query({}, (tabs) => {
++    for (const t of tabs) {
++      if (!t?.id) continue;
++      if (!tabStates[t.id]) continue;
++      const url = t.url || '';
++      if (!url) continue;
++      if (isMonitoredUrl(url)) continue;
++
++      // 더 이상 등록된 사이트가 아니면 상태 정리 + 아이콘 흰색으로
++      delete tabStates[t.id];
++      updateIcon(t.id);
++    }
++  });
++}
+\ No newline at end of file
+diff --git a/sources/src/content.js b/sources/src/content.js
+index b70c9d2..9de8adb 100644
+--- a/sources/src/content.js
++++ b/sources/src/content.js
+@@ -1,6 +1,14 @@
++// NOTE:
++// - content script는 <all_urls>에 주입된다.
++// - 하지만 실제 감시는 "등록/활성"된 사이트에서만 실행한다.
++
++let activeSite = null; // { key, name, detection }
++let monitoring = false;
++
+ let isGenerating = false;
+ let checkInterval = null;
+ let completionStatus = 'idle'; // 'idle' | 'completed'
++
+ // 최초 1회는 무조건 background로 상태를 보내서
+ // "아무 질문 없음" 상태(흰색 뱃지)도 탭에 즉시 반영되게 한다.
+ let hasSentInitialState = false;
+@@ -19,6 +27,7 @@ const MIN_CHECK_GAP_MS = 250;
+ let _checkScheduled = false;
+ let _lastCheckAt = 0;
+ function scheduleCheck() {
++  if (!monitoring) return;
+   if (_checkScheduled) return;
+   _checkScheduled = true;
+   const now = Date.now();
+@@ -36,6 +45,7 @@ function scheduleCheck() {
+   }, delay);
+ }
+ function ensurePolling() {
++  if (!monitoring) return;
+   if (checkInterval) return;
+   checkInterval = window.setInterval(() => {
+     scheduleCheck();
+@@ -47,16 +57,12 @@ function isVisible(elem) {
+   if (!elem) return false;
+   return !!(elem.offsetWidth || elem.offsetHeight || elem.getClientRects().length);
+ }
+-function getPlatform() {
+-  const host = window.location.hostname;
+-  if (host.includes('chatgpt.com')) return 'chatgpt';
+-  if (host.includes('gemini.google.com')) return 'gemini';
+-  if (host.includes('aistudio.google.com')) return 'aistudio';
+-  if (host.includes('claude.ai')) return 'claude';
+-  return null;
++function getSiteKey() {
++  return activeSite?.key || null;
+ }
+ // 탭 제목(Title)에 배지(이모지) 달기 - 아이콘 바로 옆에 표시됨
+ function updateTitleBadge() {
++  if (!monitoring) return;
+   // 1. 현재 제목 가져오기
+   const currentTitle = document.title;
+   // 2. 제목 앞의 ⚪/🟠/🟢 배지 및 공백을 모두 제거하여 순수 제목 추출
+@@ -72,37 +78,84 @@ function updateTitleBadge() {
+     document.title = targetTitle;
+   }
+ }
++
++function clearTitleBadge() {
++  const currentTitle = document.title;
++  const cleanTitle = currentTitle.replace(/^([⚪🟠🟢]\s?)+/, "");
++  if (cleanTitle !== currentTitle) document.title = cleanTitle;
++}
++
++// =========================
++// Generating detection rules
++// =========================
++function detectChatGPTGenerating() {
++  const btn = document.querySelector('[data-testid="stop-button"]');
++  return isVisible(btn);
++}
++
++function detectGeminiGenerating() {
++  // Gemini: "중지" 또는 "Stop" 단어가 들어간 버튼이 화면에 보이는지 확인
++  const btns = document.querySelectorAll('[aria-label*="중지"], [aria-label*="Stop"], [aria-label*="stop"]');
++  return Array.from(btns).some((btn) => isVisible(btn));
++}
++
++function detectAiStudioGenerating() {
++  // AI Studio:
++  // 1. Google Material Icon 자체가 'stop', 'cancel', 'block' 인지 확인 (가장 확실함)
++  const icons = Array.from(document.querySelectorAll('mat-icon'));
++  const hasStopIcon = icons.some((icon) => {
++    const iconName = icon.innerText.trim().toLowerCase();
++    return ['stop', 'cancel', 'block', 'close'].includes(iconName) && isVisible(icon);
++  });
++  // 2. 로딩바 확인
++  const progressBar = document.querySelector('mat-progress-bar');
++  return hasStopIcon || isVisible(progressBar);
++}
++
++function detectClaudeGenerating() {
++  // Claude: 버튼 텍스트에 "Stop"이 포함되어 있는지 확인
++  const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
++  return buttons.some((btn) => btn.innerText.includes('Stop') && isVisible(btn));
++}
++
++function detectGenericStopGenerating() {
++  // 범용: Stop/중지/Cancel/취소/Abort 텍스트 or aria-label 기반
++  // (등록된 사이트에서만 쓰이므로, 너무 공격적으로 잡지 않는다)
++  const STOP_RE = /(\bstop\b|\bcancel\b|\babort\b|중지|취소)/i;
++
++  const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
++  for (const el of candidates) {
++    if (!isVisible(el)) continue;
++    const aria = (el.getAttribute('aria-label') || '').trim();
++    const txt = (el.innerText || '').trim();
++    const hay = `${aria} ${txt}`.trim();
++    if (!hay) continue;
++    if (STOP_RE.test(hay)) return true;
++  }
++  return false;
++}
++
++function detectGenerating(site) {
++  const mode = site?.detection || 'generic_stop';
++  if (mode === 'chatgpt') return detectChatGPTGenerating();
++  if (mode === 'gemini') return detectGeminiGenerating();
++  if (mode === 'aistudio') return detectAiStudioGenerating();
++  if (mode === 'claude') return detectClaudeGenerating();
++  return detectGenericStopGenerating();
++}
++
+ function checkStatus() {
+-  const platform = getPlatform();
+-  if (!platform) return;
++  if (!monitoring || !activeSite) return;
++
++  const platform = activeSite.key;
+   let currentlyGenerating = false;
+-  if (platform === 'chatgpt') {
+-    const btn = document.querySelector('[data-testid="stop-button"]');
+-    currentlyGenerating = isVisible(btn);
+-  } 
+-  else if (platform === 'gemini') {
+-    // Gemini: "중지" 또는 "Stop" 단어가 들어간 버튼이 화면에 보이는지 확인
+-    const btns = document.querySelectorAll('[aria-label*="중지"], [aria-label*="Stop"], [aria-label*="stop"]');
+-    currentlyGenerating = Array.from(btns).some(btn => isVisible(btn));
+-  } 
+-  else if (platform === 'aistudio') {
+-    // AI Studio:
+-    // 1. Google Material Icon 자체가 'stop', 'cancel', 'block' 인지 확인 (가장 확실함)
+-    const icons = Array.from(document.querySelectorAll('mat-icon'));
+-    const hasStopIcon = icons.some(icon => {
+-      const iconName = icon.innerText.trim().toLowerCase();
+-      return ['stop', 'cancel', 'block', 'close'].includes(iconName) && isVisible(icon);
+-    });
+-    // 2. 로딩바 확인
+-    const progressBar = document.querySelector('mat-progress-bar');
+-    currentlyGenerating = hasStopIcon || isVisible(progressBar);
+-  } 
+-  else if (platform === 'claude') {
+-    // Claude: 버튼 텍스트에 "Stop"이 포함되어 있는지 확인
+-    // (Claude는 div나 button 안에 "Stop" 텍스트를 명시적으로 보여줌)
+-    const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+-    currentlyGenerating = buttons.some(btn => btn.innerText.includes('Stop') && isVisible(btn));
++
++  try {
++    currentlyGenerating = detectGenerating(activeSite);
++  } catch (_) {
++    currentlyGenerating = false;
+   }
++
+   // 상태가 변했을 때만 처리
+   if (isGenerating !== currentlyGenerating) {
+     isGenerating = currentlyGenerating;
+@@ -118,7 +171,8 @@ function checkStatus() {
+     chrome.runtime.sendMessage({
+       action: "status_update",
+       platform,
+-      isGenerating
++      siteName: activeSite.name,
++      isGenerating,
+     });
+     hasSentInitialState = true;
+   } else if (!hasSentInitialState) {
+@@ -126,7 +180,8 @@ function checkStatus() {
+     chrome.runtime.sendMessage({
+       action: "status_update",
+       platform,
+-      isGenerating
++      siteName: activeSite.name,
++      isGenerating,
+     });
+     hasSentInitialState = true;
+   }
+@@ -135,6 +190,7 @@ function checkStatus() {
+ }
+ // 사용자 상호작용(클릭/스크롤) 시 🟢 -> ⚪ 전환 (요구사항)
+ function markAsAcknowledged() {
++  if (!monitoring) return;
+   if (isGenerating) return;
+   if (completionStatus !== 'completed') return;
+   completionStatus = 'idle';
+@@ -142,33 +198,104 @@ function markAsAcknowledged() {
+   // background(툴바 배지)도 같이 ⚪로 바꿔준다.
+   chrome.runtime.sendMessage({
+     action: 'user_activity',
+-    platform: getPlatform(),
++    platform: getSiteKey(),
++    siteName: activeSite?.name,
+     kind: 'ack'
+   });
+ }
+-// 이벤트 리스너 등록
+-// - focus/keydown으로는 절대 지우지 않는다.
+-// - "클릭" 또는 "스크롤(휠/스크롤 이벤트)"로만 🟢 -> ⚪
+-document.addEventListener('click', markAsAcknowledged, true);
+-document.addEventListener('scroll', markAsAcknowledged, true);
+-document.addEventListener('wheel', markAsAcknowledged, { passive: true, capture: true });
+-// 탭 활성/비활성 전환 시에도 상태 재평가(백그라운드 완료 감지 보강)
+-document.addEventListener('visibilitychange', scheduleCheck);
+-// DOM 변화를 감지하여 체크 실행 (성능을 위해 1초에 한 번씩만 체크하도록 할 수도 있음)
+-// 여기서는 MutationObserver를 사용하여 실시간 반응성을 높입니다.
+-const observer = new MutationObserver(() => {
++
++// =========================
++// Monitor lifecycle (start/stop) - registered sites only
++// =========================
++let _observer = null;
++let _handlersBound = false;
++
++function bindHandlersOnce() {
++  if (_handlersBound) return;
++  _handlersBound = true;
++  // 이벤트 리스너 등록
++  // - focus/keydown으로는 절대 지우지 않는다.
++  // - "클릭" 또는 "스크롤(휠/스크롤 이벤트)"로만 🟢 -> ⚪
++  document.addEventListener('click', markAsAcknowledged, true);
++  document.addEventListener('scroll', markAsAcknowledged, true);
++  document.addEventListener('wheel', markAsAcknowledged, { passive: true, capture: true });
++  // 탭 활성/비활성 전환 시에도 상태 재평가(백그라운드 완료 감지 보강)
++  document.addEventListener('visibilitychange', scheduleCheck);
++}
++
++function startMonitoring(site) {
++  if (monitoring && activeSite?.key === site?.key) return;
++
++  stopMonitoring();
++  activeSite = site;
++  monitoring = true;
++  isGenerating = false;
++  completionStatus = 'idle';
++  hasSentInitialState = false;
++
++  bindHandlersOnce();
++
++  // DOM 변화를 감지하여 체크 실행
++  _observer = new MutationObserver(() => {
++    scheduleCheck();
++  });
++  try {
++    _observer.observe(document.body, {
++      childList: true,
++      subtree: true,
++      // Gemini는 childList 변화 없이 style/class/aria-label만 바뀌는 경우가 있어
++      // attributes 감시를 켜야 🟠 -> 🟢 전환을 놓치지 않는다.
++      attributes: true,
++      attributeFilter: ['aria-label', 'style', 'class', 'hidden', 'disabled']
++    });
++  } catch (_) {
++    // 일부 문서(특수 프레임)에서는 observe 실패할 수 있음
++  }
++
++  ensurePolling();
+   scheduleCheck();
+-});
+-// 감시 시작
+-observer.observe(document.body, {
+-  childList: true,
+-  subtree: true,
+-  // Gemini는 childList 변화 없이 style/class/aria-label만 바뀌는 경우가 있어
+-  // attributes 감시를 켜야 🟠 -> 🟢 전환을 놓치지 않는다.
+-  attributes: true,
+-  attributeFilter: ['aria-label', 'style', 'class', 'hidden', 'disabled']
+-});
+-// 초기 로드 시 상태 확인
+-ensurePolling();
+-scheduleCheck();
+-console.log("AI 답변 감시자가 시작되었습니다.");
+\ No newline at end of file
++}
++
++function stopMonitoring() {
++  monitoring = false;
++  activeSite = null;
++  isGenerating = false;
++  completionStatus = 'idle';
++  hasSentInitialState = false;
++
++  if (checkInterval) {
++    clearInterval(checkInterval);
++    checkInterval = null;
++  }
++  if (_observer) {
++    try { _observer.disconnect(); } catch (_) {}
++    _observer = null;
++  }
++  clearTitleBadge();
++}
++
++function refreshSiteFromStorage() {
++  if (!window?.ReadyAi?.sites) return;
++
++  chrome.storage.local.get([
++    window.ReadyAi.sites.STORAGE_KEYS.ENABLED_SITES,
++    window.ReadyAi.sites.STORAGE_KEYS.CUSTOM_SITES,
++  ], (res) => {
++    const enabledSites = window.ReadyAi.sites.ensureEnabledSitesObject(res?.enabledSites);
++    const customSites = window.ReadyAi.sites.normalizeCustomSites(res?.customSites);
++    const site = window.ReadyAi.sites.resolveSiteFromConfig(window.location.href, enabledSites, customSites);
++    if (site) startMonitoring(site);
++    else stopMonitoring();
++  });
++}
++
++// 설정 변경 시(팝업에서 사이트 on/off 또는 custom 추가/삭제) 즉시 반영
++try {
++  chrome.storage.onChanged.addListener((changes, area) => {
++    if (area !== 'local') return;
++    if (changes.enabledSites || changes.customSites) refreshSiteFromStorage();
++  });
++} catch (_) {}
++
++refreshSiteFromStorage();
++console.log('[Ready_Ai] content script loaded');
+\ No newline at end of file
+diff --git a/sources/src/popup.html b/sources/src/popup.html
+index 6e8bee1..0f6279b 100644
+--- a/sources/src/popup.html
++++ b/sources/src/popup.html
+@@ -3,12 +3,44 @@
+ <head>
+   <meta charset="utf-8">
+   <style>
+-    body { width: 220px; padding: 15px; font-family: 'Segoe UI', sans-serif; }
++    body { width: 320px; padding: 15px; font-family: 'Segoe UI', sans-serif; }
+     .header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+     .header img { width: 24px; height: 24px; }
+     .header h2 { margin: 0; font-size: 16px; }
+     .option { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+     .desc { font-size: 11px; color: #666; line-height: 1.4; }
++    .divider { height: 1px; background: #e6e6e6; margin: 14px 0; }
++    .section-title { font-size: 13px; font-weight: 600; margin: 0 0 8px 0; }
++    .site-list { display: flex; flex-direction: column; gap: 8px; }
++    .site-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
++    .site-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++    .site-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++    .site-sub { font-size: 10px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++
++    .custom-form { display: flex; flex-direction: column; gap: 8px; }
++    .field { display: flex; flex-direction: column; gap: 4px; }
++    .field label { font-size: 11px; color: #555; }
++    input[type="text"], textarea, select {
++      font-size: 12px;
++      padding: 6px 8px;
++      border: 1px solid #ccc;
++      border-radius: 8px;
++      outline: none;
++    }
++    textarea { resize: vertical; min-height: 46px; }
++    .row-actions { display: flex; gap: 8px; }
++    .btn {
++      border: 1px solid #ccc;
++      background: #fff;
++      border-radius: 10px;
++      padding: 6px 10px;
++      font-size: 12px;
++      cursor: pointer;
++    }
++    .btn.primary { border-color: #FFA500; }
++    .btn.danger { border-color: #ff6b6b; color: #b00000; }
++    .hint { font-size: 10px; color: #888; line-height: 1.35; }
++    .scroll { max-height: 520px; overflow: auto; padding-right: 4px; }
+     /* Toggle Switch Style */
+     .switch { position: relative; display: inline-block; width: 34px; height: 20px; }
+     .switch input { opacity: 0; width: 0; height: 0; }
+@@ -19,18 +51,57 @@
+   </style>
+ </head>
+ <body>
+-  <div class="header">
+-    <img src="../assets/bell_profile.png" alt="Logo">
+-    <h2>Ready_Ai</h2>
++  <div class="scroll">
++    <div class="header">
++      <img src="../assets/bell_profile.png" alt="Logo">
++      <h2>Ready_Ai</h2>
++    </div>
++
++    <div class="option">
++      <span>방해 금지 모드 🌙</span>
++      <label class="switch">
++        <input type="checkbox" id="dnd-toggle">
++        <span class="slider"></span>
++      </label>
++    </div>
++    <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (아이콘 배지는 계속 표시됨)</div>
++
++    <div class="divider"></div>
++
++    <div class="section-title">사이트 등록(기본)</div>
++    <div class="site-list" id="builtin-sites"></div>
++
++    <div class="divider"></div>
++
++    <div class="section-title">사이트 등록(직접 추가)</div>
++    <div class="site-list" id="custom-sites"></div>
++    <div class="hint" style="margin: 8px 0 10px 0;">
++      URL 패턴은 크롬 매치패턴으로 입력해. 예: <b>https://example.com/*</b> 또는 <b>https://*.example.com/*</b><br>
++      여러 개는 줄바꿈으로 추가 가능.
++    </div>
++
++    <div class="custom-form">
++      <div class="field">
++        <label>이름</label>
++        <input type="text" id="custom-name" placeholder="예: Perplexity(회사)" />
++      </div>
++      <div class="field">
++        <label>URL 패턴(여러 줄 가능)</label>
++        <textarea id="custom-patterns" placeholder="https://example.com/*"></textarea>
++      </div>
++      <div class="field">
++        <label>생성중 감지 방식</label>
++        <select id="custom-detection"></select>
++      </div>
++      <div class="row-actions">
++        <button class="btn primary" id="add-custom">추가</button>
++        <button class="btn" id="reset-defaults">기본값 복구</button>
++      </div>
++      <div class="hint" id="status-hint"></div>
++    </div>
+   </div>
+-  <div class="option">
+-    <span>방해 금지 모드 🌙</span>
+-    <label class="switch">
+-      <input type="checkbox" id="dnd-toggle">
+-      <span class="slider"></span>
+-    </label>
+-  </div>
+-  <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (아이콘 배지는 계속 표시됨)</div>
++
++  <script src="sites.js"></script>
+   <script src="popup.js"></script>
+ </body>
+ </html>
+\ No newline at end of file
+diff --git a/sources/src/popup.js b/sources/src/popup.js
+index f41406f..2a2d8c5 100644
+--- a/sources/src/popup.js
++++ b/sources/src/popup.js
+@@ -1,11 +1,256 @@
+-document.addEventListener('DOMContentLoaded', () => {
+-  const dndToggle = document.getElementById('dnd-toggle');
+-  // 저장된 설정 불러오기
+-  chrome.storage.local.get(['dndMode'], (result) => {
+-    dndToggle.checked = result.dndMode || false;
++function $(id) {
++  return document.getElementById(id);
++}
++
++function setHint(text, isError = false) {
++  const el = $('status-hint');
++  if (!el) return;
++  el.textContent = text || '';
++  el.style.color = isError ? '#b00000' : '#888';
++}
++
++function getSitesApi() {
++  return window?.ReadyAi?.sites;
++}
++
++function loadConfig(cb) {
++  const sitesApi = getSitesApi();
++  const enabledKey = sitesApi?.STORAGE_KEYS?.ENABLED_SITES || 'enabledSites';
++  const customKey = sitesApi?.STORAGE_KEYS?.CUSTOM_SITES || 'customSites';
++
++  chrome.storage.local.get(['dndMode', enabledKey, customKey], (res) => {
++    const enabledSites = sitesApi?.ensureEnabledSitesObject
++      ? sitesApi.ensureEnabledSitesObject(res?.[enabledKey])
++      : (res?.[enabledKey] || {});
++    const customSites = sitesApi?.normalizeCustomSites
++      ? sitesApi.normalizeCustomSites(res?.[customKey])
++      : (res?.[customKey] || []);
++
++    cb({
++      dndMode: !!res.dndMode,
++      enabledSites,
++      customSites,
++    });
+   });
+-  // 설정 변경 시 저장
++}
++
++function saveConfig(cfg, cb) {
++  const sitesApi = getSitesApi();
++  const enabledKey = sitesApi?.STORAGE_KEYS?.ENABLED_SITES || 'enabledSites';
++  const customKey = sitesApi?.STORAGE_KEYS?.CUSTOM_SITES || 'customSites';
++  chrome.storage.local.set(
++    {
++      dndMode: !!cfg.dndMode,
++      [enabledKey]: cfg.enabledSites,
++      [customKey]: cfg.customSites,
++    },
++    () => cb?.()
++  );
++}
++
++function renderBuiltinSites(cfg) {
++  const sitesApi = getSitesApi();
++  const container = $('builtin-sites');
++  if (!container || !sitesApi?.BUILTIN_SITES) return;
++
++  container.innerHTML = '';
++
++  for (const s of sitesApi.BUILTIN_SITES) {
++    const row = document.createElement('div');
++    row.className = 'site-row';
++
++    const left = document.createElement('div');
++    left.className = 'site-left';
++
++    const name = document.createElement('div');
++    name.className = 'site-name';
++    name.textContent = s.name;
++
++    const sub = document.createElement('div');
++    sub.className = 'site-sub';
++    sub.textContent = (s.patterns || []).join(' , ');
++
++    left.appendChild(name);
++    left.appendChild(sub);
++
++    const switchWrap = document.createElement('label');
++    switchWrap.className = 'switch';
++
++    const input = document.createElement('input');
++    input.type = 'checkbox';
++    input.checked = !!cfg.enabledSites?.[s.key];
++
++    const slider = document.createElement('span');
++    slider.className = 'slider';
++
++    input.addEventListener('change', () => {
++      cfg.enabledSites[s.key] = input.checked;
++      saveConfig(cfg, () => {
++        setHint('저장됨');
++      });
++    });
++
++    switchWrap.appendChild(input);
++    switchWrap.appendChild(slider);
++
++    row.appendChild(left);
++    row.appendChild(switchWrap);
++    container.appendChild(row);
++  }
++}
++
++function renderCustomSites(cfg) {
++  const sitesApi = getSitesApi();
++  const container = $('custom-sites');
++  if (!container || !sitesApi) return;
++
++  container.innerHTML = '';
++  const customSites = Array.isArray(cfg.customSites) ? cfg.customSites : [];
++
++  if (!customSites.length) {
++    const empty = document.createElement('div');
++    empty.className = 'desc';
++    empty.textContent = '직접 추가한 사이트가 없습니다.';
++    container.appendChild(empty);
++    return;
++  }
++
++  for (const s of customSites) {
++    const row = document.createElement('div');
++    row.className = 'site-row';
++
++    const left = document.createElement('div');
++    left.className = 'site-left';
++
++    const name = document.createElement('div');
++    name.className = 'site-name';
++    name.textContent = s.name;
++
++    const modeLabel = sitesApi.DETECTION_MODES?.find((m) => m.key === s.detection)?.label || s.detection;
++    const sub = document.createElement('div');
++    sub.className = 'site-sub';
++    sub.textContent = `${modeLabel} · ${(s.patterns || []).join(' , ')}`;
++
++    left.appendChild(name);
++    left.appendChild(sub);
++
++    const actions = document.createElement('div');
++    actions.style.display = 'flex';
++    actions.style.alignItems = 'center';
++    actions.style.gap = '8px';
++
++    const switchWrap = document.createElement('label');
++    switchWrap.className = 'switch';
++
++    const input = document.createElement('input');
++    input.type = 'checkbox';
++    input.checked = !!s.enabled;
++    const slider = document.createElement('span');
++    slider.className = 'slider';
++    input.addEventListener('change', () => {
++      s.enabled = input.checked;
++      saveConfig(cfg, () => setHint('저장됨'));
++    });
++    switchWrap.appendChild(input);
++    switchWrap.appendChild(slider);
++
++    const del = document.createElement('button');
++    del.className = 'btn danger';
++    del.textContent = '삭제';
++    del.addEventListener('click', () => {
++      cfg.customSites = cfg.customSites.filter((x) => x.id !== s.id);
++      saveConfig(cfg, () => {
++        setHint('삭제됨');
++        renderCustomSites(cfg);
++      });
++    });
++
++    actions.appendChild(switchWrap);
++    actions.appendChild(del);
++
++    row.appendChild(left);
++    row.appendChild(actions);
++    container.appendChild(row);
++  }
++}
++
++function renderDetectionOptions() {
++  const sitesApi = getSitesApi();
++  const select = $('custom-detection');
++  if (!select || !sitesApi?.DETECTION_MODES) return;
++
++  select.innerHTML = '';
++  for (const m of sitesApi.DETECTION_MODES) {
++    const opt = document.createElement('option');
++    opt.value = m.key;
++    opt.textContent = m.label;
++    select.appendChild(opt);
++  }
++  select.value = 'generic_stop';
++}
++
++function wireActions(cfg) {
++  const dndToggle = $('dnd-toggle');
++  dndToggle.checked = !!cfg.dndMode;
+   dndToggle.addEventListener('change', () => {
+-    chrome.storage.local.set({ dndMode: dndToggle.checked });
++    cfg.dndMode = dndToggle.checked;
++    saveConfig(cfg, () => setHint('저장됨'));
++  });
++
++  $('add-custom').addEventListener('click', () => {
++    const sitesApi = getSitesApi();
++    if (!sitesApi) return;
++
++    const name = String($('custom-name').value || '').trim();
++    const rawPatterns = $('custom-patterns').value;
++    const patterns = sitesApi.normalizePatterns(rawPatterns);
++    const detection = String($('custom-detection').value || 'generic_stop').trim();
++
++    if (!name) {
++      setHint('이름을 입력해줘', true);
++      return;
++    }
++    if (!patterns.length) {
++      setHint('URL 패턴을 1개 이상 입력해줘', true);
++      return;
++    }
++
++    const bad = patterns.find((p) => !sitesApi.isProbablyValidMatchPattern(p));
++    if (bad) {
++      setHint(`URL 패턴 형식이 이상함: ${bad}`, true);
++      return;
++    }
++
++    const id = sitesApi.makeCustomId();
++    cfg.customSites = [...(cfg.customSites || []), { id, name, patterns, detection, enabled: true }];
++    saveConfig(cfg, () => {
++      $('custom-name').value = '';
++      $('custom-patterns').value = '';
++      $('custom-detection').value = 'generic_stop';
++      setHint('추가됨');
++      renderCustomSites(cfg);
++    });
++  });
++
++  $('reset-defaults').addEventListener('click', () => {
++    const sitesApi = getSitesApi();
++    if (!sitesApi) return;
++    cfg.enabledSites = sitesApi.defaultEnabledSites();
++    cfg.customSites = [];
++    saveConfig(cfg, () => {
++      setHint('기본값으로 복구됨');
++      renderBuiltinSites(cfg);
++      renderCustomSites(cfg);
++    });
++  });
++}
++
++document.addEventListener('DOMContentLoaded', () => {
++  renderDetectionOptions();
++  loadConfig((cfg) => {
++    setHint('');
++    renderBuiltinSites(cfg);
++    renderCustomSites(cfg);
++    wireActions(cfg);
+   });
+ });
+\ No newline at end of file
+diff --git a/sources/src/sites.js b/sources/src/sites.js
+new file mode 100644
+index 0000000..6f3519f
+--- /dev/null
++++ b/sources/src/sites.js
+@@ -0,0 +1,277 @@
++// Ready_Ai - Site registry (built-in + custom)
++//
++// 목표:
++// - 팝업에서 "여러 사이트 등록"을 가능하게 한다.
++// - content script는 <all_urls>에 주입되지만, 실제로는 "등록/활성"된 사이트에서만
++//   감시(폴링/MutationObserver/타이틀 뱃지)를 실행한다.
++// - 등록한 사이트가 늘어나도, 여기만 건드리면 UI/감시 로직이 같이 확장되게 한다.
++
++(function () {
++  const STORAGE_KEYS = {
++    DND_MODE: 'dndMode',
++    ENABLED_SITES: 'enabledSites',
++    CUSTOM_SITES: 'customSites',
++  };
++
++  // detection:
++  // - chatgpt / gemini / aistudio / claude : 전용 규칙
++  // - generic_stop : "Stop/중지/Cancel/취소" 버튼 가시성 기반 범용 규칙
++  const DETECTION_MODES = [
++    { key: 'chatgpt', label: 'ChatGPT 전용' },
++    { key: 'gemini', label: 'Gemini 전용' },
++    { key: 'aistudio', label: 'AI Studio 전용' },
++    { key: 'claude', label: 'Claude 전용' },
++    { key: 'generic_stop', label: '범용(Stop/중지 버튼)' },
++  ];
++
++  // "등록 가능한" 기본 사이트들
++  // - 사용자가 팝업에서 on/off
++  // - 추가로 "직접 추가"(customSites) 가능
++  const BUILTIN_SITES = [
++    {
++      key: 'chatgpt',
++      name: 'ChatGPT',
++      patterns: ['https://chatgpt.com/*'],
++      detection: 'chatgpt',
++      defaultEnabled: true,
++    },
++    {
++      key: 'gemini',
++      name: 'Gemini',
++      patterns: ['https://gemini.google.com/*'],
++      detection: 'gemini',
++      defaultEnabled: true,
++    },
++    {
++      key: 'aistudio',
++      name: 'AI Studio',
++      patterns: ['https://aistudio.google.com/*'],
++      detection: 'aistudio',
++      defaultEnabled: false,
++    },
++    {
++      key: 'claude',
++      name: 'Claude',
++      patterns: ['https://claude.ai/*'],
++      detection: 'claude',
++      defaultEnabled: false,
++    },
++    // 자주 쓰는 곳들(범용 Stop 규칙)
++    {
++      key: 'perplexity',
++      name: 'Perplexity',
++      patterns: ['https://www.perplexity.ai/*', 'https://perplexity.ai/*'],
++      detection: 'generic_stop',
++      defaultEnabled: false,
++    },
++    {
++      key: 'poe',
++      name: 'Poe',
++      patterns: ['https://poe.com/*'],
++      detection: 'generic_stop',
++      defaultEnabled: false,
++    },
++    {
++      key: 'copilot',
++      name: 'Copilot',
++      patterns: ['https://copilot.microsoft.com/*'],
++      detection: 'generic_stop',
++      defaultEnabled: false,
++    },
++  ];
++
++  // =============== Match Pattern Utils (Chrome match patterns) ===============
++  const _patternRegexCache = new Map();
++
++  function escapeRegex(s) {
++    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++  }
++
++  // Chrome match pattern -> RegExp
++  // - <all_urls>
++  // - scheme://host/path
++  //   scheme: * | http | https
++  //   host: * | *.domain.com | domain.com
++  //   path: /* 와일드카드
++  function matchPatternToRegex(pattern) {
++    if (_patternRegexCache.has(pattern)) return _patternRegexCache.get(pattern);
++
++    let re;
++    if (pattern === '<all_urls>') {
++      // content script는 http/https에서만 실제로 의미가 있으니 최소 범위로 제한
++      re = /^https?:\/\//i;
++      _patternRegexCache.set(pattern, re);
++      return re;
++    }
++
++    const parts = pattern.split('://');
++    if (parts.length !== 2) {
++      // 실패 케이스는 항상 false 매칭
++      re = /^$/;
++      _patternRegexCache.set(pattern, re);
++      return re;
++    }
++    const scheme = parts[0];
++    const rest = parts[1];
++
++    const slashIdx = rest.indexOf('/');
++    const hostPart = slashIdx >= 0 ? rest.slice(0, slashIdx) : rest;
++    const pathPart = slashIdx >= 0 ? rest.slice(slashIdx) : '/*';
++
++    const schemeRe = scheme === '*' ? 'https?' : escapeRegex(scheme);
++
++    let hostRe;
++    if (hostPart === '*') hostRe = '[^/]+?';
++    else if (hostPart.startsWith('*.')) {
++      const domain = hostPart.slice(2);
++      hostRe = `(?:[^/]+?\\.)?${escapeRegex(domain)}`;
++    } else hostRe = escapeRegex(hostPart);
++
++    // path: '*' -> '.*'
++    const pathEsc = escapeRegex(pathPart).replace(/\\\*/g, '.*');
++    re = new RegExp(`^${schemeRe}://${hostRe}${pathEsc}$`, 'i');
++    _patternRegexCache.set(pattern, re);
++    return re;
++  }
++
++  function urlMatchesPattern(url, pattern) {
++    try {
++      const re = matchPatternToRegex(pattern);
++      return re.test(url);
++    } catch (_) {
++      return false;
++    }
++  }
++
++  function urlMatchesAny(url, patterns) {
++    if (!patterns || !patterns.length) return false;
++    return patterns.some((p) => urlMatchesPattern(url, p));
++  }
++
++  function normalizePatterns(rawText) {
++    if (!rawText) return [];
++    if (Array.isArray(rawText)) {
++      return rawText
++        .map((s) => String(s || '').trim())
++        .filter(Boolean);
++    }
++    return String(rawText)
++      .split(/\r?\n|,|;/g)
++      .map((s) => s.trim())
++      .filter(Boolean);
++  }
++
++  function isProbablyValidMatchPattern(pattern) {
++    if (!pattern) return false;
++    if (pattern === '<all_urls>') return true;
++    // 너무 빡세게 검증하면 사용자가 답답해하니, 최소한만 체크
++    // - scheme://host/...
++    // - path에 *가 섞일 수 있음
++    const m = pattern.match(/^([*a-zA-Z]+):\/\/([^/]+)(\/.*)?$/);
++    if (!m) return false;
++    const scheme = m[1];
++    if (!(scheme === '*' || scheme === 'http' || scheme === 'https')) return false;
++    const host = m[2];
++    if (!host || host.includes(' ')) return false;
++    // host에 '*' 허용(*, *.domain)
++    if (host !== '*' && host.includes('*') && !host.startsWith('*.')) return false;
++    return true;
++  }
++
++  function defaultEnabledSites() {
++    const enabled = {};
++    for (const s of BUILTIN_SITES) enabled[s.key] = !!s.defaultEnabled;
++    return enabled;
++  }
++
++  function ensureEnabledSitesObject(enabledSites) {
++    const defaults = defaultEnabledSites();
++    if (!enabledSites || typeof enabledSites !== 'object') return defaults;
++    // 누락된 key만 기본값으로 채움(기존 설정 유지)
++    for (const k of Object.keys(defaults)) {
++      if (!(k in enabledSites)) enabledSites[k] = defaults[k];
++    }
++    return enabledSites;
++  }
++
++  // custom site shape:
++  // {
++  //   id: "custom_xxx",
++  //   name: "내 사이트",
++  //   patterns: ["https://example.com/*"],
++  //   detection: "generic_stop",
++  //   enabled: true
++  // }
++  function normalizeCustomSites(customSites) {
++    if (!Array.isArray(customSites)) return [];
++    return customSites
++      .map((s) => {
++        const id = String(s?.id || '').trim();
++        const name = String(s?.name || '').trim() || 'Custom';
++        const patterns = normalizePatterns(s?.patterns);
++        const detection = String(s?.detection || 'generic_stop').trim();
++        const enabled = !!s?.enabled;
++        if (!id || !patterns.length) return null;
++        return { id, name, patterns, detection, enabled };
++      })
++      .filter(Boolean);
++  }
++
++  function resolveSiteFromConfig(url, enabledSites, customSites) {
++    const enabled = ensureEnabledSitesObject(enabledSites);
++    const customs = normalizeCustomSites(customSites);
++
++    // 1) custom 우선(사용자 명시)
++    for (const c of customs) {
++      if (!c.enabled) continue;
++      if (urlMatchesAny(url, c.patterns)) {
++        return {
++          key: c.id,
++          name: c.name,
++          patterns: c.patterns,
++          detection: c.detection || 'generic_stop',
++          isCustom: true,
++        };
++      }
++    }
++
++    // 2) builtin
++    for (const s of BUILTIN_SITES) {
++      if (!enabled[s.key]) continue;
++      if (urlMatchesAny(url, s.patterns)) {
++        return {
++          key: s.key,
++          name: s.name,
++          patterns: s.patterns,
++          detection: s.detection,
++          isCustom: false,
++        };
++      }
++    }
++
++    return null;
++  }
++
++  // 간단 UUID(충돌만 피하면 됨)
++  function makeCustomId() {
++    const rand = Math.random().toString(16).slice(2);
++    return `custom_${Date.now().toString(16)}_${rand}`;
++  }
++
++  // Export to global
++  window.ReadyAi = window.ReadyAi || {};
++  window.ReadyAi.sites = {
++    STORAGE_KEYS,
++    DETECTION_MODES,
++    BUILTIN_SITES,
++    matchPatternToRegex,
++    urlMatchesAny,
++    normalizePatterns,
++    isProbablyValidMatchPattern,
++    defaultEnabledSites,
++    ensureEnabledSitesObject,
++    normalizeCustomSites,
++    resolveSiteFromConfig,
++    makeCustomId,
++  };
++})();
+
+
+(참고: 이 파일은 분석된 소스 코드가 포함되지 않은 상태로 저장되었습니다.)

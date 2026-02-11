@@ -3,12 +3,44 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { width: 220px; padding: 15px; font-family: 'Segoe UI', sans-serif; }
+    body { width: 320px; padding: 15px; font-family: 'Segoe UI', sans-serif; }
     .header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
     .header img { width: 24px; height: 24px; }
     .header h2 { margin: 0; font-size: 16px; }
     .option { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
     .desc { font-size: 11px; color: #666; line-height: 1.4; }
+    .divider { height: 1px; background: #e6e6e6; margin: 14px 0; }
+    .section-title { font-size: 13px; font-weight: 600; margin: 0 0 8px 0; }
+    .site-list { display: flex; flex-direction: column; gap: 8px; }
+    .site-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .site-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .site-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .site-sub { font-size: 10px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .custom-form { display: flex; flex-direction: column; gap: 8px; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 11px; color: #555; }
+    input[type="text"], textarea, select {
+      font-size: 12px;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      outline: none;
+    }
+    textarea { resize: vertical; min-height: 46px; }
+    .row-actions { display: flex; gap: 8px; }
+    .btn {
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn.primary { border-color: #FFA500; }
+    .btn.danger { border-color: #ff6b6b; color: #b00000; }
+    .hint { font-size: 10px; color: #888; line-height: 1.35; }
+    .scroll { max-height: 520px; overflow: auto; padding-right: 4px; }
     /* Toggle Switch Style */
     .switch { position: relative; display: inline-block; width: 34px; height: 20px; }
     .switch input { opacity: 0; width: 0; height: 0; }
@@ -19,20 +51,90 @@
   </style>
 </head>
 <body>
-  <div class="header">
-    <img src="../assets/bell_profile.png" alt="Logo">
-    <h2>Ready_Ai</h2>
-  </div>
-  
-  <div class="option">
-    <span>방해 금지 모드 🌙</span>
-    <label class="switch">
-      <input type="checkbox" id="dnd-toggle">
-      <span class="slider"></span>
-    </label>
-  </div>
-  <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (아이콘 배지는 계속 표시됨)</div>
+  <div class="scroll">
+    <div class="header">
+      <img src="../assets/bell_profile.png" alt="Logo">
+      <h2>Ready_Ai</h2>
+    </div>
 
+    <div class="option">
+      <span>방해 금지 모드 🌙</span>
+      <label class="switch">
+        <input type="checkbox" id="dnd-toggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (아이콘 배지는 계속 표시됨)</div>
+
+    <div class="divider"></div>
+    <div class="section-title">Gemini 자동 완료 확인</div>
+    <div class="option">
+      <span>유휴(Idle)일 때만 확인 🟢</span>
+      <label class="switch">
+        <input type="checkbox" id="gemini-probe-toggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="desc">
+      Gemini는 백그라운드 탭에서 답변이 이미 끝났어도 UI(Stop 버튼)가 늦게 갱신되어 🟠가 오래 유지되는 경우가 있습니다.
+      이 옵션을 켜면, PC가 유휴 상태일 때만 탭을 아주 잠깐 활성화해서 완료 여부를 확인합니다.
+      (사용 중일 때는 절대 탭 전환을 하지 않음)
+    </div>
+
+    <div class="custom-form" style="margin-top:10px;">
+      <div class="field">
+        <label>확인 주기(분, 최소 1)</label>
+        <input type="text" id="gemini-probe-period" placeholder="1" />
+      </div>
+      <div class="field">
+        <label>유휴 판정 기준(초)</label>
+        <input type="text" id="gemini-probe-idle-sec" placeholder="60" />
+      </div>
+      <div class="field">
+        <label>🟠 유지 후 강제 확인 시작(초)</label>
+        <input type="text" id="gemini-probe-min-orange-sec" placeholder="12" />
+      </div>
+      <div class="hint">
+        ※ 화면 전환이 거슬리면 위 스위치를 끄면 됩니다. (탭 전환 없이 가능한 범위 내에서는 계속 감지 시도)
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="section-title">사이트 등록(기본)</div>
+    <div class="site-list" id="builtin-sites"></div>
+
+    <div class="divider"></div>
+
+    <div class="section-title">사이트 등록(직접 추가)</div>
+    <div class="site-list" id="custom-sites"></div>
+    <div class="hint" style="margin: 8px 0 10px 0;">
+      URL 패턴은 크롬 매치패턴으로 입력해. 예: <b>https://example.com/*</b> 또는 <b>https://*.example.com/*</b><br>
+      여러 개는 줄바꿈으로 추가 가능.
+    </div>
+
+    <div class="custom-form">
+      <div class="field">
+        <label>이름</label>
+        <input type="text" id="custom-name" placeholder="예: Perplexity(회사)" />
+      </div>
+      <div class="field">
+        <label>URL 패턴(여러 줄 가능)</label>
+        <textarea id="custom-patterns" placeholder="https://example.com/*"></textarea>
+      </div>
+      <div class="field">
+        <label>생성중 감지 방식</label>
+        <select id="custom-detection"></select>
+      </div>
+      <div class="row-actions">
+        <button class="btn primary" id="add-custom">추가</button>
+        <button class="btn" id="reset-defaults">기본값 복구</button>
+      </div>
+      <div class="hint" id="status-hint"></div>
+    </div>
+  </div>
+
+  <script src="sites.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
