@@ -1,0 +1,22 @@
+[REQUEST]
+diff --git a/sources/src/content.js b/sources/src/content.js
+--- a/sources/src/content.js
++++ b/sources/src/content.js
+@@ -22,12 +22,6 @@
+ const TITLE_BADGE = {
+   WHITE: '⚪',  // 대기/읽음/아무 질문 없음
+   ORANGE: '🟠', // 생성중
+   GREEN: '🟢',  // 완료(아직 클릭/스크롤로 확인 전)
+ };
+-// 탭 타이틀 뱃지(이모지)
+-const TITLE_BADGE = {
+-  WHITE: '⚪',  // 대기/읽음/아무 질문 없음
+-  ORANGE: '🟠', // 생성중
+-  GREEN: '🟢',  // 완료(아직 클릭/스크롤로 확인 전)
+-};
+ // background(frame 합산) 쪽에서 stale frame을 안 남기기 위해
+ // content는 주기적으로(기본 5s) 상태를 heartbeat로 보내준다.
+ const HEARTBEAT_MS = 5000;
+
+
+(참고: 이 파일은 분석된 소스 코드가 포함되지 않은 상태로 저장되었습니다.)

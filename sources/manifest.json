@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "description": "AI(ChatGPT, Gemini) 답변 완료 알림 및 상태 관리",
   "background": {
-    "service_worker": "sources/src/background.js"
+    "service_worker": "src/background.js"
   },
   "action": {
-    "default_popup": "sources/src/popup.html",
+    "default_popup": "src/popup.html",
     "default_icon": {
-      "128": "sources/assets/bell_profile.png"
+      "128": "assets/bell_profile.png"
     }
   },
   "permissions": [
@@ -29,8 +29,8 @@
         "http://*/*"
       ],
       "js": [
-        "sources/src/sites.js",
-        "sources/src/content.js"
+        "src/sites.js",
+        "src/content.js"
       ],
       "all_frames": true,
       "match_about_blank": true

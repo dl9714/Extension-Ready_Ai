@@ -346,18 +346,18 @@ function updateIcon(tabId) {
     case 'ORANGE':
       iconPath = 'assets/bell_pending.png';
       badgeBg = '#FFA500';
-      badgeFg = '#FFA500';
+      badgeFg = '#FFFFFF';
       break;
     case 'GREEN':
       iconPath = 'assets/bell_unread.png';
       badgeBg = '#7CFC00'; // 연두
-      badgeFg = '#7CFC00';
+      badgeFg = '#000000';
       break;
     case 'WHITE':
     default:
       iconPath = 'assets/bell_profile.png';
       badgeBg = '#FFFFFF';
-      badgeFg = '#FFFFFF';
+      badgeFg = '#000000';
       break;
   }
   // 아이콘 및 배지 적용
@@ -543,4 +543,12 @@ function purgeDisabledTabs() {
 }
 
 // 서비스워커 시작 시에도 한번 캐시
-getSiteConfig();
+getSiteConfig(() => {
+  // 컴퓨터/브라우저 재시작 시 탭 상태(뱃지)가 증발하는 문제 해결을 위해
+  // 로드 시점에 모든 탭에 "상태 체크" 신호를 보냅니다.
+  chrome.tabs.query({}, (tabs) => {
+    for (const t of tabs) {
+      if (t?.id) safeActionCall(pTabsSendMessage(t.id, { action: 'force_check', reason: 'sw_init' }));
+    }
+  });
+});

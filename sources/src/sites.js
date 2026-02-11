@@ -31,7 +31,7 @@
     {
       key: 'chatgpt',
       name: 'ChatGPT',
-      patterns: ['https://chatgpt.com/*'],
+      patterns: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
       detection: 'chatgpt',
       defaultEnabled: true,
     },

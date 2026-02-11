@@ -28,12 +28,7 @@ const TITLE_BADGE = {
   GREEN: '🟢',  // 완료(아직 클릭/스크롤로 확인 전)
 };
 
-// 탭 타이틀 뱃지(이모지)
-const TITLE_BADGE = {
-  WHITE: '⚪',  // 대기/읽음/아무 질문 없음
-  ORANGE: '🟠', // 생성중
-  GREEN: '🟢',  // 완료(아직 클릭/스크롤로 확인 전)
-};
+
 
 // background(frame 합산) 쪽에서 stale frame을 안 남기기 위해
 // content는 주기적으로(기본 5s) 상태를 heartbeat로 보내준다.
@@ -600,10 +595,8 @@ function startMonitoring(site) {
   hasSentInitialState = false;
   bindHandlersOnce();
 
-  // 오픈 shadowRoot deep query/observe 활성화
-  try { initDeepRoots(); } catch (_) {}
-
-  bindHandlersOnce();
+  // 오픈 shadowRoot deep query/observe (Gemini 등) 필요 시만 활성화
+  setDeepEnabled(shouldEnableDeepForSite(site));
   // DOM 변화를 감지하여 체크 실행
   _observer = new MutationObserver(() => {
     scheduleCheck();
@@ -641,6 +634,8 @@ function stopMonitoring() {
     _observer = null;
   }
   setDeepEnabled(false);
+  // 안전장치: deep observer/roots가 남아있으면 정리
+  try { shutdownDeepRoots(); } catch (_) {}
   _lastHeartbeatAt = 0;
   clearTitleBadge();
 }
