@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 220px; padding: 15px; font-family: 'Segoe UI', sans-serif; }
+    .header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+    .header img { width: 24px; height: 24px; }
+    .header h2 { margin: 0; font-size: 16px; }
+    .option { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .desc { font-size: 11px; color: #666; line-height: 1.4; }
+    /* Toggle Switch Style */
+    .switch { position: relative; display: inline-block; width: 34px; height: 20px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
+    .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+    input:checked + .slider { background-color: #FFA500; }
+    input:checked + .slider:before { transform: translateX(14px); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="../assets/bell_profile.png" alt="Logo">
+    <h2>Ready_Ai</h2>
+  </div>
+  
+  <div class="option">
+    <span>방해 금지 모드 🌙</span>
+    <label class="switch">
+      <input type="checkbox" id="dnd-toggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="desc">활성화 시 완료 알림 팝업이 뜨지 않습니다. (아이콘 배지는 계속 표시됨)</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

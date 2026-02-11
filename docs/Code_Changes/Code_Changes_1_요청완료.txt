@@ -1,0 +1,94 @@
+[REQUEST]
+src/content.js에 대한 diff입니다.
+기존 코드에 파비콘(탭 아이콘) 위에 상태 점(주황/녹색)을 그리는 로직을 추가했습니다.
+
+변경 사항:
+
+생성 중: 탭 아이콘에 주황색 점 표시
+
+완료: 탭 아이콘에 녹색 점 표시 (탭을 보지 않아도 완료 여부 식별 가능)
+
+탭 클릭(Focus): 원래 아이콘으로 복구
+
+code
+Diff
+download
+content_copy
+expand_less
+--- src/content.js
++++ src/content.js
+@@ -1,5 +1,6 @@
+ let isGenerating = false;
+ let checkInterval = null;
++let originalFavicon = null; // 원래 파비콘 URL 저장
+ 
+ // 사이트별 "생성 중지" 버튼을 식별하는 셀렉터
+ const SELECTORS = {
+@@ -13,6 +14,48 @@
+   return null;
+ }
+ 
++// 탭 아이콘(Favicon) 변경 함수
++function updateFavicon(status) {
++  let link = document.querySelector("link[rel*='icon']");
++  if (!link) return; // 아이콘 태그가 없으면 패스
++
++  // 최초 한 번 원래 아이콘 주소 저장
++  if (!originalFavicon) originalFavicon = link.href;
++
++  // 복구 모드면 원래 주소로 되돌림
++  if (status === 'default') {
++    link.href = originalFavicon;
++    return;
++  }
++
++  // 캔버스를 생성하여 기존 아이콘 + 점 그리기
++  const canvas = document.createElement('canvas');
++  canvas.width = 32;
++  canvas.height = 32;
++  const ctx = canvas.getContext('2d');
++
++  const img = new Image();
++  img.crossOrigin = 'anonymous'; // CORS 이슈 방지
++  img.src = originalFavicon;
++
++  img.onload = () => {
++    ctx.drawImage(img, 0, 0, 32, 32); // 기존 아이콘 그리기
++
++    // 우측 하단에 상태 점 그리기
++    ctx.beginPath();
++    ctx.arc(24, 24, 6, 0, 2 * Math.PI); // x, y, radius
++    ctx.fillStyle = status === 'generating' ? '#FFA500' : '#32CD32'; // 주황(진행) or 녹색(완료)
++    ctx.strokeStyle = '#FFFFFF';
++    ctx.lineWidth = 1.5;
++    ctx.fill();
++    ctx.stroke();
++
++    // 아이콘 교체
++    link.href = canvas.toDataURL('image/png');
++  };
++}
++
+ function checkStatus() {
+   const platform = getPlatform();
+   if (!platform) return;
+@@ -28,8 +71,17 @@
+       platform: platform,
+       isGenerating: isGenerating
+     });
++
++    // 상태에 따라 파비콘 업데이트
++    if (isGenerating) updateFavicon('generating');
++    else updateFavicon('completed');
+   }
+ }
+ 
++// 사용자가 탭을 클릭해서 내용을 확인하면 아이콘 원래대로 복구
++window.addEventListener('focus', () => {
++  if (!isGenerating) updateFavicon('default');
++});
++
+ // DOM 변화를 감지하여 체크 실행 (성능을 위해 1초에 한 번씩만 체크하도록 할 수도 있음)
+ // 여기서는 MutationObserver를 사용하여 실시간 반응성을 높입니다.
+
+(참고: 이 파일은 분석된 소스 코드가 포함되지 않은 상태로 저장되었습니다.)
