@@ -595,8 +595,10 @@ function startMonitoring(site) {
   hasSentInitialState = false;
   bindHandlersOnce();
 
-  // 오픈 shadowRoot deep query/observe (Gemini 등) 필요 시만 활성화
-  setDeepEnabled(shouldEnableDeepForSite(site));
+  // 오픈 shadowRoot deep query/observe 활성화
+  try { initDeepRoots(); } catch (_) {}
+
+  bindHandlersOnce();
   // DOM 변화를 감지하여 체크 실행
   _observer = new MutationObserver(() => {
     scheduleCheck();
@@ -634,14 +636,21 @@ function stopMonitoring() {
     _observer = null;
   }
   setDeepEnabled(false);
-  // 안전장치: deep observer/roots가 남아있으면 정리
-  try { shutdownDeepRoots(); } catch (_) {}
   _lastHeartbeatAt = 0;
   clearTitleBadge();
 }
 
+let _bootRetryCount = 0;
 function refreshSiteFromStorage() {
-  if (!window?.ReadyAi?.sites) return;
+  // sites.js가 아직 준비되지 않은 상태(세션 복원 타이밍 등)에서는
+  // 뱃지가 초기화되지 않고 그대로 비는 현상이 생길 수 있어, 짧게 재시도한다.
+  if (!window?.ReadyAi?.sites) {
+    if (_bootRetryCount < 20) {
+      _bootRetryCount += 1;
+      setTimeout(refreshSiteFromStorage, 250);
+    }
+    return;
+  }
 
   chrome.storage.local.get([
     window.ReadyAi.sites.STORAGE_KEYS.ENABLED_SITES,
@@ -698,6 +707,10 @@ console.log('[Ready_Ai] content script loaded');
 try {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg) return;
+    if (msg.action === 'ping') {
+      try { sendResponse?.({ ok: true }); } catch (_) {}
+      return;
+    }
     if (msg.action === 'force_check') {
       // 상태는 polling/observer로도 갱신되지만,
       // Gemini는 탭 활성화 직후에 DOM이 크게 변하는 경우가 있어

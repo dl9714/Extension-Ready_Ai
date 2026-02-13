@@ -115,12 +115,59 @@ function pTabsUpdate(tabId, updateProps) {
 function pTabsSendMessage(tabId, message) {
   return new Promise((resolve) => {
     try {
-      chrome.tabs.sendMessage(tabId, message, () => resolve(true));
+      chrome.tabs.sendMessage(tabId, message, () => {
+        // 수신자가 없으면 runtime.lastError가 설정된다.
+        if (chrome.runtime.lastError) return resolve(false);
+        resolve(true);
+      });
     } catch (_) {
       resolve(false);
     }
   });
 }
+function pScriptingExec(tabId, files, allFrames = true) {
+  return new Promise((resolve) => {
+    try {
+      if (!chrome.scripting?.executeScript) return resolve(false);
+      chrome.scripting.executeScript(
+        {
+          target: { tabId, allFrames: !!allFrames },
+          files: Array.isArray(files) ? files : [files],
+        },
+        () => {
+          if (chrome.runtime.lastError) return resolve(false);
+          resolve(true);
+        }
+      );
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+async function ensureContentScripts(tab) {
+  // 세션 복원/탭 discard 타이밍에 따라 content script가 아직 주입되지 않은 탭이 생긴다.
+  // 이 경우 title 뱃지(이모지)와 status_update가 올라오지 않아서 “뱃지 사라짐”처럼 보인다.
+  const tabId = tab?.id;
+  if (typeof tabId !== 'number') return false;
+  const url = tab?.url || '';
+  if (!url) return false;
+  const site = resolveSiteForUrl(url);
+  if (!site) return false; // 등록/활성된 사이트만
+
+  // 1) ping으로 content 존재 확인
+  const alive = await pTabsSendMessage(tabId, { action: 'ping' });
+  if (alive) return true;
+
+  // 2) 없으면 강제 주입(필요 권한: "scripting")
+  const injected = await pScriptingExec(tabId, ['src/sites.js', 'src/content.js'], true);
+  if (!injected) return false;
+
+  // 3) 주입 직후 즉시 체크 요청
+  await pTabsSendMessage(tabId, { action: 'force_check', reason: 'inject' });
+  return true;
+}
+
 function pIdleQueryState(idleSec) {
   return new Promise((resolve) => {
     try {
@@ -542,13 +589,38 @@ function purgeDisabledTabs() {
   });
 }
 
-// 서비스워커 시작 시에도 한번 캐시
-getSiteConfig(() => {
-  // 컴퓨터/브라우저 재시작 시 탭 상태(뱃지)가 증발하는 문제 해결을 위해
-  // 로드 시점에 모든 탭에 "상태 체크" 신호를 보냅니다.
-  chrome.tabs.query({}, (tabs) => {
+async function kickAllTabs(reason) {
+  getSiteConfig(async () => {
+    const tabs = await pTabsQuery({});
     for (const t of tabs) {
-      if (t?.id) safeActionCall(pTabsSendMessage(t.id, { action: 'force_check', reason: 'sw_init' }));
+      if (!t || typeof t.id !== 'number') continue;
+      const url = t.url || '';
+      const site = resolveSiteForUrl(url);
+      if (!site) continue; // 등록/활성된 사이트만
+
+      // 상태가 비어 있으면 최소 WHITE라도 찍어서 "완전 공백"을 방지
+      if (!tabStates[t.id]) {
+        tabStates[t.id] = { status: 'WHITE', platform: site.key, siteName: site.name };
+        updateIcon(t.id);
+      }
+
+      // content가 없으면 주입해서 title 뱃지도 복구
+      safeActionCall(ensureContentScripts(t));
+      safeActionCall(pTabsSendMessage(t.id, { action: 'force_check', reason: reason || 'kick' }));
     }
   });
-});
+}
+
+try {
+  chrome.runtime.onStartup.addListener(() => {
+    safeActionCall(kickAllTabs('onStartup'));
+  });
+} catch (_) {}
+
+try {
+  chrome.runtime.onInstalled.addListener(() => {
+    safeActionCall(kickAllTabs('onInstalled'));
+  });
+} catch (_) {}
+
+safeActionCall(kickAllTabs('sw_init'));

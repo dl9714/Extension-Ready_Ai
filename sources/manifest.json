@@ -16,6 +16,7 @@
     "storage",
     "notifications",
     "tabs",
+    "scripting",
     "alarms",
     "idle"
   ],
