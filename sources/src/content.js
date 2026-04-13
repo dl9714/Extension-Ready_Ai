@@ -22,6 +22,11 @@ const TITLE_BADGE = {
   ORANGE: '🟠', // 생성중
   GREEN: '🟢',  // 완료(아직 클릭/스크롤로 확인 전)
 };
+const TITLE_BADGE_PREFIX_RE = /^(?:[⚪🟠🟢](?:\[?\d+\+?\]?|\s*(?:\d+\+?)?)?\s*)+/;
+function getTitleBadgeCountGlyph() {
+  if (!steeringQueue.length) return '';
+  return `${getSteeringQueueCountText()}`;
+}
 // background(frame 합산) 쪽에서 stale frame을 안 남기기 위해
 // content는 주기적으로(기본 5s) 상태를 heartbeat로 보내준다.
 const HEARTBEAT_MS = 5000;
@@ -261,17 +266,13 @@ function getSiteKey() {
 function updateTitleBadge() {
   if (!monitoring) return;
   if (!IS_TOP_FRAME) return;
-  // 1. 현재 제목 가져오기
   const currentTitle = document.title;
-  // 2. 제목 앞의 ⚪/🟠/🟢 배지 및 공백을 모두 제거하여 순수 제목 추출
-  // (정규식: 줄 시작(^)에 있는 배지 이모지와 공백(\s?)이 하나 이상(+) 있는 경우)
-  const cleanTitle = currentTitle.replace(/^([⚪🟠🟢]\s?)+/, "");
-  // 3. 상태에 따른 목표 제목 생성
+  const cleanTitle = currentTitle.replace(TITLE_BADGE_PREFIX_RE, '').trimStart();
   let badge = TITLE_BADGE.WHITE;
   if (isGenerating) badge = TITLE_BADGE.ORANGE;
   else if (completionStatus === 'completed') badge = TITLE_BADGE.GREEN;
-  const targetTitle = `${badge} ${cleanTitle}`;
-  // 4. 현재 제목이 목표와 다를 때만 변경 (이 비교가 무한 루프를 막아줌)
+  const countGlyph = getTitleBadgeCountGlyph();
+  const targetTitle = `${badge}${countGlyph} ${cleanTitle}`.trim();
   if (currentTitle !== targetTitle) {
     document.title = targetTitle;
   }
@@ -279,20 +280,13 @@ function updateTitleBadge() {
 function clearTitleBadge() {
   if (!IS_TOP_FRAME) return;
   const currentTitle = document.title;
-  const cleanTitle = currentTitle.replace(/^([⚪🟠🟢]\s?)+/, "");
+  const cleanTitle = currentTitle.replace(TITLE_BADGE_PREFIX_RE, '').trimStart();
   if (cleanTitle !== currentTitle) document.title = cleanTitle;
 }
-const STEERING_QUICK_ACTIONS = [
-  '이어서 진행해줘',
-  '핵심만 다시 정리해줘',
-  '실행 단계로 바꿔줘',
-  '반대 관점도 추가해줘',
-];
+const STEERING_AUTO_SEND_DELAY_MS = 1000;
 let steeringHost = null;
 let steeringRoot = null;
 let steeringRefs = null;
-let steeringOfferToken = 0;
-let steeringClosedToken = 0;
 let steeringPanelOpen = false;
 const STEERING_STORAGE_KEYS = Object.freeze({
   ENABLED: 'steeringEnabled',
@@ -304,8 +298,23 @@ const STEERING_THEME = Object.freeze({
 });
 let steeringEnabled = true;
 let steeringTheme = STEERING_THEME.DARK;
-let steeringRecentPrompts = [];
-const MAX_STEERING_RECENT = 4;
+let steeringQueue = [];
+let steeringQueueSeq = 1;
+let steeringAutoSendTimer = null;
+let steeringSendLock = false;
+let steeringSendLockTimer = null;
+let steeringProcessing = false;
+let steeringSuppressAcknowledgeUntil = 0;
+let steeringLastReportedQueueCount = null;
+let steeringLastCompletionAt = 0;
+let steeringAwaitingResponseStart = false;
+let steeringAwaitingResponseTimer = null;
+function suppressComposerAcknowledge(ms = 1200) {
+  steeringSuppressAcknowledgeUntil = Date.now() + Math.max(0, ms);
+}
+function isComposerAcknowledgeSuppressed() {
+  return Date.now() < steeringSuppressAcknowledgeUntil;
+}
 function normalizeSteeringTheme(value) {
   return String(value || '').trim().toLowerCase() === STEERING_THEME.LIGHT ? STEERING_THEME.LIGHT : STEERING_THEME.DARK;
 }
@@ -322,16 +331,72 @@ function loadSteeringPrefs(cb) {
     cb?.();
   }
 }
-function pushRecentSteeringPrompt(text) {
-  const value = String(text || '').trim();
-  if (!value) return;
-  steeringRecentPrompts = [value, ...steeringRecentPrompts.filter((item) => item !== value)].slice(0, MAX_STEERING_RECENT);
+function clearSteeringAutoSendTimer() {
+  if (!steeringAutoSendTimer) return;
+  try { clearTimeout(steeringAutoSendTimer); } catch (_) {}
+  steeringAutoSendTimer = null;
+}
+function clearSteeringSendLock() {
+  steeringSendLock = false;
+  if (!steeringSendLockTimer) return;
+  try { clearTimeout(steeringSendLockTimer); } catch (_) {}
+  steeringSendLockTimer = null;
+}
+function clearSteeringAwaitingResponseStart() {
+  steeringAwaitingResponseStart = false;
+  if (!steeringAwaitingResponseTimer) return;
+  try { clearTimeout(steeringAwaitingResponseTimer); } catch (_) {}
+  steeringAwaitingResponseTimer = null;
+}
+function armSteeringAwaitingResponseStart(ms = 15000) {
+  clearSteeringAwaitingResponseStart();
+  steeringAwaitingResponseStart = true;
+  steeringAwaitingResponseTimer = setTimeout(() => {
+    steeringAwaitingResponseStart = false;
+    steeringAwaitingResponseTimer = null;
+    updateSteeringUi();
+  }, Math.max(1500, ms));
+}
+function armSteeringSendLock(ms = 2000) {
+  clearSteeringSendLock();
+  steeringSendLock = true;
+  steeringSendLockTimer = setTimeout(() => {
+    steeringSendLock = false;
+    steeringSendLockTimer = null;
+    updateSteeringUi();
+  }, Math.max(200, ms));
+}
+function hasActiveSteeringOffer() {
+  return !isGenerating && (completionStatus === 'completed' || completionStatus === 'idle');
+}
+function canAutoSendSteeringNow() {
+  return hasActiveSteeringOffer() && !steeringSendLock && !steeringProcessing && !steeringAwaitingResponseStart;
+}
+function clearSteeringCompletionOffer() {
+  if (completionStatus === 'completed') {
+    completionStatus = 'idle';
+    updateTitleBadge();
+    try {
+      chrome.runtime.sendMessage({
+        action: 'user_activity',
+        platform: getSiteKey(),
+        siteName: activeSite?.name,
+      });
+    } catch (_) {}
+  }
 }
 function getSteeringLauncherText() {
-  return hasActiveSteeringOffer() ? '답변 완료 · 후속 지시 열기' : '스티어링 열기';
+  return steeringPanelOpen ? '스티어링 닫기' : '스티어링 열기';
 }
 function getSteeringLauncherSubText() {
-  return hasActiveSteeringOffer() ? '여러 지시를 이어서 넣을 수 있어요' : '항상 열어둘 수 있는 후속 지시 패널';
+  return '항상 열어둘 수 있는 후속 지시 패널';
+}
+function getSteeringStateLabel() {
+  const name = activeSite?.name || 'AI';
+  return `${name} 후속 지시`;
+}
+function getSteeringPrimaryLabel() {
+  return canAutoSendSteeringNow() ? 'Enter' : '입력 대기';
 }
 function applySteeringTheme() {
   if (!steeringHost || !steeringRoot) return;
@@ -339,56 +404,38 @@ function applySteeringTheme() {
   const dock = steeringRoot.querySelector('.dock');
   if (dock) dock.setAttribute('data-theme', steeringTheme);
 }
+function getSteeringAnchorElement() {
+  const composer = getActiveComposer();
+  if (!composer) return null;
+  const form = composer.closest?.('form');
+  if (form && isVisible(form)) return form;
+  const group = composer.closest?.('[data-testid], [role="group"], [role="presentation"]');
+  if (group && isVisible(group)) return group;
+  return composer;
+}
 function positionSteeringUi() {
   if (!steeringHost) return;
-  const composer = getActiveComposer();
-  const margin = 18;
+  const anchor = getSteeringAnchorElement();
+  if (anchor) {
+    try {
+      const rect = anchor.getBoundingClientRect();
+      const right = Math.max(12, Math.round(window.innerWidth - rect.right));
+      const bottom = Math.max(12, Math.round(window.innerHeight - rect.top + 10));
+      steeringHost.style.left = 'auto';
+      steeringHost.style.transform = 'none';
+      steeringHost.style.right = `${right}px`;
+      steeringHost.style.bottom = `${bottom}px`;
+      return;
+    } catch (_) {}
+  }
   steeringHost.style.left = 'auto';
   steeringHost.style.transform = 'none';
-  steeringHost.style.right = `${margin}px`;
-  if (composer && composer.getBoundingClientRect) {
-    const rect = composer.getBoundingClientRect();
-    const composerTop = Number.isFinite(rect.top) ? rect.top : window.innerHeight;
-    const desiredBottom = Math.max(88, Math.round(window.innerHeight - composerTop + 12));
-    steeringHost.style.bottom = `${desiredBottom}px`;
-  } else {
-    steeringHost.style.bottom = '96px';
-  }
-}
-function renderSteeringRecent() {
-  if (!steeringRefs?.recent) return;
-  steeringRefs.recent.innerHTML = '';
-  if (!steeringRecentPrompts.length) {
-    steeringRefs.recent.style.display = 'none';
-    return;
-  }
-  steeringRefs.recent.style.display = 'flex';
-  for (const label of steeringRecentPrompts) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'history-chip';
-    btn.textContent = label.length > 28 ? `${label.slice(0, 28)}…` : label;
-    btn.title = label;
-    btn.addEventListener('click', (event) => {
-      try { event.preventDefault(); } catch (_) {}
-      try { event.stopPropagation(); } catch (_) {}
-      const current = String(steeringRefs?.input?.value || '').trim();
-      steeringRefs.input.value = current ? `${current}
-${label}` : label;
-      steeringPanelOpen = true;
-      updateSteeringUi();
-      try { steeringRefs.input.focus(); } catch (_) {}
-    });
-    steeringRefs.recent.appendChild(btn);
-  }
+  steeringHost.style.right = '18px';
+  steeringHost.style.bottom = '140px';
 }
 window.addEventListener('resize', () => {
   positionSteeringUi();
 });
-function getSteeringStateLabel() {
-  const name = activeSite?.name || 'AI';
-  return `${name} 답변 완료 · 추가 진행 스티어링`;
-}
 function isSteeringTarget(target) {
   if (!target) return false;
   try {
@@ -414,7 +461,9 @@ function mergeSteeringText(existingText, nextText) {
   if (!existing) return next;
   if (!next) return existing;
   if (existing === next) return existing;
-  return `${existing}\n\n${next}`;
+  return `${existing}
+
+${next}`;
 }
 function findVisibleEditable(selectors) {
   for (const selector of selectors) {
@@ -451,10 +500,12 @@ function getComposerSelectors(siteKey) {
       '#prompt-textarea',
       'textarea[data-testid="prompt-textarea"]',
       'textarea[placeholder*="Message"]',
+      'textarea[placeholder*="message"]',
       'textarea[placeholder*="메시지"]',
-      '[data-testid="prompt-textarea"]',
       'div[contenteditable="true"][data-testid="prompt-textarea"]',
+      'div[contenteditable="true"][role="textbox"]',
       'form textarea',
+      'textarea',
     ];
   }
   if (siteKey === 'gemini') {
@@ -466,6 +517,7 @@ function getComposerSelectors(siteKey) {
       'textarea[aria-label*="prompt"]',
       'textarea[aria-label*="메시지"]',
       'form textarea',
+      'textarea',
     ];
   }
   if (siteKey === 'claude') {
@@ -535,6 +587,61 @@ function getActiveComposer() {
 function getActiveSendButton() {
   return findVisibleActionButton(getSendButtonSelectors(getSiteKey()));
 }
+function getComposerSubmitForm(composer) {
+  try {
+    const form = composer?.closest?.('form');
+    if (form && isVisible(form)) return form;
+  } catch (_) {}
+  return null;
+}
+function scoreSendButtonCandidate(el, composer) {
+  if (!el || !isVisible(el) || !isEnabledButtonLike(el)) return -999;
+  const aria = (el.getAttribute?.('aria-label') || '').trim();
+  const title = (el.getAttribute?.('title') || '').trim();
+  const testId = (el.getAttribute?.('data-testid') || '').trim();
+  const name = (el.getAttribute?.('name') || '').trim();
+  const cls = (el.className || '').toString();
+  const txt = (el.innerText || el.textContent || '').trim();
+  const hay = `${aria} ${title} ${testId} ${name} ${cls} ${txt}`.trim();
+  if (/(stop|중지|cancel|abort|voice|mic|upload|첨부|attachment|tool|menu|옵션|옵션열기|plus|더보기)/i.test(hay)) return -999;
+  let score = 0;
+  if (el.getAttribute?.('type') === 'submit') score += 7;
+  if (/send|전송|submit|arrow-up|paper-plane/i.test(hay)) score += 6;
+  if (/send/i.test(testId)) score += 5;
+  const form = getComposerSubmitForm(composer);
+  if (form && form.contains(el)) score += 3;
+  try {
+    if (composer) {
+      const cr = composer.getBoundingClientRect();
+      const br = el.getBoundingClientRect();
+      const dx = Math.abs(br.right - cr.right);
+      const dy = Math.abs((br.top + br.bottom) / 2 - (cr.top + cr.bottom) / 2);
+      if (br.left >= cr.left - 120 && br.left <= cr.right + 240) score += 2;
+      if (dx <= 260) score += 2;
+      if (dy <= 120) score += 2;
+    }
+  } catch (_) {}
+  return score;
+}
+function findNearbySendButton(composer) {
+  const form = getComposerSubmitForm(composer);
+  const scopes = [form, composer?.parentElement, composer?.closest?.('[data-testid], section, main, article, div') || null, document];
+  let best = null;
+  let bestScore = -999;
+  for (const scope of scopes) {
+    if (!scope || typeof scope.querySelectorAll !== 'function') continue;
+    const buttons = Array.from(scope.querySelectorAll('button, [role="button"], input[type="submit"]'));
+    for (const btn of buttons) {
+      const score = scoreSendButtonCandidate(btn, composer);
+      if (score > bestScore) {
+        best = btn;
+        bestScore = score;
+      }
+    }
+    if (best && bestScore >= 4) return best;
+  }
+  return bestScore >= 4 ? best : null;
+}
 function dispatchTextEvents(el) {
   if (!el) return;
   const inputEventInit = { bubbles: true, cancelable: true, data: null, inputType: 'insertText' };
@@ -543,15 +650,34 @@ function dispatchTextEvents(el) {
   }
   try { el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true })); } catch (_) {}
 }
-function dispatchSubmitKey(el) {
+function dispatchSubmitKey(el, extra = {}) {
   if (!el) return false;
-  const eventInit = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13 };
+  const eventInit = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', which: 13, keyCode: 13, ...extra };
   try {
     const down = new KeyboardEvent('keydown', eventInit);
     const accepted = el.dispatchEvent(down);
+    const press = new KeyboardEvent('keypress', eventInit);
+    el.dispatchEvent(press);
     const up = new KeyboardEvent('keyup', eventInit);
     el.dispatchEvent(up);
     return accepted !== false;
+  } catch (_) {
+    return false;
+  }
+}
+function requestSubmitComposer(composer) {
+  const form = getComposerSubmitForm(composer);
+  if (!form) return false;
+  try {
+    if (typeof form.requestSubmit === 'function') {
+      const submitter = getActiveSendButton() || findNearbySendButton(composer) || undefined;
+      form.requestSubmit(submitter);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const ev = new Event('submit', { bubbles: true, cancelable: true });
+    return form.dispatchEvent(ev) !== false;
   } catch (_) {
     return false;
   }
@@ -605,30 +731,215 @@ function setControlValue(el, value) {
   }
   return false;
 }
+function waitForSteeringTick(ms = 80) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+async function waitForSubmissionStart(composer, beforeText, timeout = 900) {
+  const baseline = String(beforeText || '').trim();
+  const deadline = Date.now() + Math.max(120, timeout);
+  while (Date.now() <= deadline) {
+    try { maybeRescanShadowRoots(); } catch (_) {}
+    const current = String(getCurrentComposerText(composer) || '').trim();
+    if (!current || current !== baseline) return true;
+    try {
+      if (activeSite && detectGenerating(activeSite)) return true;
+    } catch (_) {}
+    await waitForSteeringTick(70);
+  }
+  return false;
+}
+async function tryTriggerComposerSend(composer, trigger) {
+  if (!composer || typeof trigger !== 'function') return false;
+  const beforeText = getCurrentComposerText(composer);
+  let triggered = false;
+  try { triggered = trigger() !== false; } catch (_) { triggered = false; }
+  if (!triggered) return false;
+  return await waitForSubmissionStart(composer, beforeText);
+}
 function setSteeringStatus(text, isError = false) {
   if (!steeringRefs?.status) return;
   steeringRefs.status.textContent = text || '';
   steeringRefs.status.dataset.state = isError ? 'error' : 'ok';
 }
 function hideSteeringUi() {
-  if (!steeringHost) return;
-  steeringHost.style.display = 'none';
+  if (steeringHost) steeringHost.style.display = 'none';
+  syncSteeringQueueCount();
 }
-function hasActiveSteeringOffer() {
-  return !isGenerating && steeringOfferToken > 0 && steeringClosedToken !== steeringOfferToken;
+function getSteeringQueueCountValue() {
+  return Math.max(0, Number(steeringQueue.length) || 0);
+}
+function getSteeringQueueCountText() {
+  const count = getSteeringQueueCountValue();
+  return count > 99 ? '99+' : String(count);
+}
+function getSteeringQueueCountLabel() {
+  return `대기중: ${getSteeringQueueCountText()}`;
+}
+function syncSteeringQueueCount(force = false) {
+  const count = Math.max(0, Number(steeringQueue.length) || 0);
+  if (!force && steeringLastReportedQueueCount === count) return;
+  steeringLastReportedQueueCount = count;
+  try {
+    chrome.runtime.sendMessage({
+      action: 'steering_queue_update',
+      platform: getSiteKey(),
+      siteName: activeSite?.name,
+      count,
+    });
+  } catch (_) {}
+}
+function renderSteeringQueue() {
+  if (!steeringRefs?.queueWrap || !steeringRefs?.queue) return;
+  steeringRefs.queue.innerHTML = '';
+  steeringRefs.queueWrap.style.display = (steeringPanelOpen && steeringQueue.length) ? 'flex' : 'none';
+  if (!steeringQueue.length) return;
+  steeringQueue.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'queue-item';
+    const order = document.createElement('span');
+    order.className = 'queue-order';
+    order.textContent = String(index + 1);
+    const textEl = document.createElement('div');
+    textEl.className = 'queue-text';
+    textEl.textContent = String(item?.text || '').trim();
+    textEl.title = textEl.textContent;
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'queue-remove';
+    removeBtn.textContent = '×';
+    removeBtn.setAttribute('aria-label', '대기 삭제');
+    removeBtn.addEventListener('click', (event) => {
+      try { event.preventDefault(); } catch (_) {}
+      try { event.stopPropagation(); } catch (_) {}
+      steeringQueue = steeringQueue.filter((queued) => queued.id !== item.id);
+      setSteeringStatus(steeringQueue.length ? `${getSteeringQueueCountLabel()}` : '대기를 비웠습니다.');
+      updateSteeringUi();
+    });
+    row.appendChild(order);
+    row.appendChild(textEl);
+    row.appendChild(removeBtn);
+    steeringRefs.queue.appendChild(row);
+  });
+}
+function enqueueSteeringPrompt(text) {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const item = {
+    id: steeringQueueSeq++,
+    text: value,
+    createdAt: Date.now(),
+  };
+  steeringQueue = [...steeringQueue, item];
+  return item;
+}
+function scheduleSteeringQueueProcessing(delay = STEERING_AUTO_SEND_DELAY_MS) {
+  clearSteeringAutoSendTimer();
+  if (!monitoring || !steeringEnabled) return;
+  if (!steeringQueue.length) return;
+  if (!canAutoSendSteeringNow()) return;
+  steeringAutoSendTimer = setTimeout(() => {
+    steeringAutoSendTimer = null;
+    processSteeringQueue({ source: 'auto' });
+  }, Math.max(0, delay));
+}
+async function sendSteeringPromptText(text) {
+  const composer = getActiveComposer();
+  if (!composer) {
+    return { ok: false, sent: false, message: '현재 페이지에서 입력창을 찾지 못했습니다.' };
+  }
+  suppressComposerAcknowledge(1700);
+  const mergedText = mergeSteeringText(getCurrentComposerText(composer), text);
+  const filled = setControlValue(composer, mergedText);
+  if (!filled) {
+    return { ok: false, sent: false, message: '입력창에 지시를 넣지 못했습니다.' };
+  }
+  await waitForSteeringTick(90);
+
+  const attempts = [
+    () => {
+      const btn = getActiveSendButton();
+      if (!btn) return false;
+      try { btn.click(); return true; } catch (_) { return false; }
+    },
+    () => {
+      const btn = findNearbySendButton(composer);
+      if (!btn) return false;
+      try { btn.click(); return true; } catch (_) { return false; }
+    },
+    () => requestSubmitComposer(composer),
+    () => dispatchSubmitKey(composer),
+    () => dispatchSubmitKey(composer, { ctrlKey: true }),
+    () => dispatchSubmitKey(composer, { metaKey: true }),
+  ];
+
+  for (const attempt of attempts) {
+    const sent = await tryTriggerComposerSend(composer, attempt);
+    if (sent) {
+      return { ok: true, sent: true, message: '전송했습니다.' };
+    }
+  }
+  return { ok: false, sent: false, message: '전송 경로를 모두 시도했지만 전송하지 못했습니다.' };
+}
+async function processSteeringQueue(options = {}) {
+  if (!monitoring || !steeringEnabled) return false;
+  if (!steeringQueue.length) return false;
+  if (!canAutoSendSteeringNow()) return false;
+  const current = steeringQueue[0];
+  if (!current?.text) {
+    steeringQueue = steeringQueue.slice(1);
+    updateSteeringUi();
+    return false;
+  }
+  steeringProcessing = true;
+  updateSteeringUi();
+  try {
+    const result = await sendSteeringPromptText(current.text);
+    if (!result.ok || !result.sent) {
+      setSteeringStatus(result.message || '전송하지 못했습니다.', true);
+      updateSteeringUi();
+      return false;
+    }
+    steeringQueue = steeringQueue.slice(1);
+    clearSteeringCompletionOffer();
+    armSteeringAwaitingResponseStart();
+    armSteeringSendLock();
+    setSteeringStatus(options.source === 'auto' ? '자동 전송했습니다.' : '전송했습니다.');
+    try { if (steeringRefs?.input) steeringRefs.input.value = ''; } catch (_) {}
+    updateSteeringUi();
+    return true;
+  } finally {
+    steeringProcessing = false;
+    updateSteeringUi();
+  }
+}
+function submitSteeringInput() {
+  const refs = ensureSteeringUi();
+  const text = String(refs?.input?.value || '').trim();
+  if (!text) {
+    setSteeringStatus('후속 지시를 입력해주세요.', true);
+    try { refs?.input?.focus(); } catch (_) {}
+    return;
+  }
+  enqueueSteeringPrompt(text);
+  try { refs.input.value = ''; } catch (_) {}
+  const canSendNow = canAutoSendSteeringNow();
+  setSteeringStatus(canSendNow ? '전송 준비 중' : `${getSteeringQueueCountLabel()}`);
+  updateSteeringUi();
+  if (!canSendNow) return;
+  scheduleSteeringQueueProcessing(0);
 }
 function ensureSteeringUi() {
   if (steeringHost && steeringRoot && steeringRefs) {
     applySteeringTheme();
     positionSteeringUi();
-    renderSteeringRecent();
+    renderSteeringQueue();
     return steeringRefs;
   }
   steeringHost = document.createElement('div');
   steeringHost.id = 'ready-ai-steering-host';
   steeringHost.style.position = 'fixed';
   steeringHost.style.right = '18px';
-  steeringHost.style.bottom = '96px';
+  steeringHost.style.bottom = '140px';
   steeringHost.style.left = 'auto';
   steeringHost.style.transform = 'none';
   steeringHost.style.zIndex = '2147483647';
@@ -639,11 +950,18 @@ function ensureSteeringUi() {
       :host { all: initial; }
       .dock {
         display: flex;
-        flex-direction: column;
+        flex-direction: column-reverse;
         align-items: flex-end;
         gap: 10px;
         font-family: Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
         color: #e5e7eb;
+      }
+      .launcher-row {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        width: min(400px, calc(100vw - 28px));
       }
       .dock[data-theme="light"] {
         color: #0f172a;
@@ -677,9 +995,32 @@ function ensureSteeringUi() {
         align-items: flex-start;
         min-width: 0;
       }
+      .launcher-title-row {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        flex-wrap: nowrap;
+      }
       .launcher strong {
         font-size: 12px;
         line-height: 1.25;
+      }
+      .launcher-count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 22px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(15, 23, 42, 0.74);
+        color: #e2e8f0;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+        flex: 0 0 auto;
       }
       .launcher small {
         font-size: 11px;
@@ -699,8 +1040,13 @@ function ensureSteeringUi() {
       .dock[data-theme="light"] .launcher small {
         color: #475569;
       }
+      .dock[data-theme="light"] .launcher-count {
+        background: rgba(255, 255, 255, 0.92);
+        color: #0f172a;
+        border-color: rgba(113, 130, 168, 0.22);
+      }
       .card {
-        width: min(460px, calc(100vw - 28px));
+        width: min(400px, calc(100vw - 28px));
         border-radius: 18px;
         border: 1px solid rgba(71, 85, 105, 0.42);
         background: rgba(17, 24, 39, 0.98);
@@ -721,40 +1067,20 @@ function ensureSteeringUi() {
         justify-content: space-between;
         gap: 10px;
       }
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 11px;
-        font-weight: 800;
-        color: #a5b4fc;
-        margin-bottom: 5px;
-      }
-      .dock[data-theme="light"] .eyebrow {
-        color: #4338ca;
-      }
-      .eyebrow::before {
-        content: '';
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: #22c55e;
-        box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
-      }
       .title {
         font-size: 13px;
         font-weight: 800;
         line-height: 1.35;
         margin: 0;
       }
-      .sub {
+      .meta {
         margin-top: 4px;
         font-size: 11px;
-        line-height: 1.5;
+        line-height: 1.4;
         color: #94a3b8;
       }
-      .dock[data-theme="light"] .sub {
-        color: #667085;
+      .dock[data-theme="light"] .meta {
+        color: #64748b;
       }
       .icon-btn {
         border: 0;
@@ -765,40 +1091,9 @@ function ensureSteeringUi() {
         line-height: 1;
         padding: 2px 4px;
       }
-      .quick-row, .recent-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin: 12px 0 10px 0;
-      }
-      .recent-label {
-        width: 100%;
-        font-size: 10px;
-        color: #94a3b8;
-        margin-bottom: 2px;
-      }
-      .dock[data-theme="light"] .recent-label {
-        color: #64748b;
-      }
-      .chip, .history-chip {
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        background: rgba(99, 102, 241, 0.12);
-        color: #c7d2fe;
-        border-radius: 999px;
-        padding: 6px 10px;
-        font-size: 11px;
-        font-weight: 700;
-        cursor: pointer;
-        max-width: 100%;
-      }
-      .dock[data-theme="light"] .chip,
-      .dock[data-theme="light"] .history-chip {
-        background: rgba(99, 102, 241, 0.07);
-        color: #3730a3;
-      }
       .input {
         width: 100%;
-        min-height: 88px;
+        min-height: 72px;
         resize: vertical;
         border: 1px solid rgba(148, 163, 184, 0.35);
         border-radius: 14px;
@@ -808,6 +1103,7 @@ function ensureSteeringUi() {
         outline: none;
         background: rgba(2, 6, 23, 0.36);
         color: #f8fafc;
+        margin-top: 10px;
       }
       .dock[data-theme="light"] .input {
         background: rgba(248, 250, 252, 0.95);
@@ -823,29 +1119,101 @@ function ensureSteeringUi() {
         margin-top: 10px;
       }
       .btn {
-        flex: 1;
+        width: 100%;
         border-radius: 12px;
-        border: 1px solid rgba(148, 163, 184, 0.28);
-        background: rgba(255, 255, 255, 0.04);
-        padding: 9px 10px;
+        border: 1px solid rgba(99, 102, 241, 0.36);
+        background: linear-gradient(180deg, rgba(99,102,241,0.24), rgba(99,102,241,0.12));
+        padding: 10px 12px;
         font-size: 12px;
         font-weight: 800;
         cursor: pointer;
-        color: #e2e8f0;
-      }
-      .dock[data-theme="light"] .btn {
-        background: #ffffff;
-        color: #334155;
-        border-color: rgba(148, 163, 184, 0.35);
-      }
-      .btn.primary {
-        border-color: rgba(99, 102, 241, 0.36);
-        background: linear-gradient(180deg, rgba(99,102,241,0.24), rgba(99,102,241,0.12));
         color: #eef2ff;
       }
-      .dock[data-theme="light"] .btn.primary {
+      .dock[data-theme="light"] .btn {
         background: linear-gradient(180deg, rgba(99,102,241,0.14), rgba(99,102,241,0.05));
         color: #312e81;
+      }
+      .btn[disabled] {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .queue-wrap {
+        display: none;
+        flex-direction: column;
+        width: min(400px, calc(100vw - 28px));
+        max-height: min(260px, 42vh);
+        border-radius: 16px;
+        border: 1px solid rgba(71, 85, 105, 0.28);
+        background: rgba(15, 23, 42, 0.94);
+        box-shadow: 0 16px 36px rgba(2, 6, 23, 0.34);
+        padding: 10px 12px;
+        overflow: hidden;
+      }
+      .dock[data-theme="light"] .queue-wrap {
+        border-color: rgba(113, 130, 168, 0.22);
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
+      }
+      .queue-label {
+        font-size: 10px;
+        color: #94a3b8;
+        margin-bottom: 6px;
+      }
+      .dock[data-theme="light"] .queue-label {
+        color: #64748b;
+      }
+      .queue-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: min(190px, 34vh);
+        overflow: auto;
+        padding-right: 2px;
+      }
+      .queue-item {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr) 24px;
+        align-items: center;
+        gap: 8px;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(255, 255, 255, 0.04);
+        padding: 8px 10px;
+      }
+      .dock[data-theme="light"] .queue-item {
+        background: rgba(248, 250, 252, 0.95);
+      }
+      .queue-order {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 800;
+        background: rgba(34, 197, 94, 0.16);
+        color: #bbf7d0;
+      }
+      .dock[data-theme="light"] .queue-order {
+        color: #166534;
+      }
+      .queue-text {
+        min-width: 0;
+        font-size: 11px;
+        line-height: 1.4;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .queue-remove {
+        border: 0;
+        background: transparent;
+        color: #94a3b8;
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 0;
       }
       .status {
         min-height: 16px;
@@ -862,49 +1230,52 @@ function ensureSteeringUi() {
       }
     </style>
     <div class="dock" data-theme="dark">
-      <button class="launcher" type="button" id="ready-ai-steering-launcher">
-        <span class="dot"></span>
-        <span class="launcher-text">
-          <strong id="ready-ai-steering-launcher-title">스티어링 열기</strong>
-          <small id="ready-ai-steering-launcher-sub">항상 열어둘 수 있는 후속 지시 패널</small>
-        </span>
-      </button>
+      <div class="launcher-row" id="ready-ai-steering-launcher-row">
+        <button class="launcher" type="button" id="ready-ai-steering-launcher">
+          <span class="dot"></span>
+          <span class="launcher-text">
+            <span class="launcher-title-row">
+              <strong id="ready-ai-steering-launcher-title">스티어링 열기</strong>
+              <span class="launcher-count" id="ready-ai-steering-launcher-count">대기중: 0</span>
+            </span>
+            <small id="ready-ai-steering-launcher-sub">항상 열어둘 수 있는 후속 지시 패널</small>
+          </span>
+        </button>
+      </div>
       <div class="card" id="ready-ai-steering-card">
         <div class="top">
           <div>
-            <div class="eyebrow">Ready_Ai Steering</div>
             <div class="title" id="ready-ai-steering-title"></div>
-            <div class="sub">기본 입력창과 겹치지 않게 따로 뜨고, 후속 지시를 여러 개 이어서 넣을 수 있습니다.</div>
+            <div class="meta" id="ready-ai-steering-meta">대기: 0</div>
           </div>
           <button class="icon-btn" type="button" id="ready-ai-steering-close" aria-label="접기">×</button>
         </div>
-        <div class="quick-row" id="ready-ai-steering-quick"></div>
-        <div class="recent-row" id="ready-ai-steering-recent-wrap">
-          <div class="recent-label">최근 스티어링</div>
-          <div class="recent-row" id="ready-ai-steering-recent"></div>
-        </div>
-        <textarea class="input" id="ready-ai-steering-input" placeholder="추가 지시를 입력하세요. Enter로 입력창 채우기, Ctrl+Enter로 바로 전송"></textarea>
+        <textarea class="input" id="ready-ai-steering-input" placeholder="후속 지시 입력"></textarea>
         <div class="actions">
-          <button class="btn" type="button" id="ready-ai-steering-focus">입력창 채우기</button>
-          <button class="btn primary" type="button" id="ready-ai-steering-send">바로 전송</button>
+          <button class="btn" type="button" id="ready-ai-steering-primary">입력 대기</button>
         </div>
         <div class="status" id="ready-ai-steering-status"></div>
+      </div>
+      <div class="queue-wrap" id="ready-ai-steering-queue-wrap">
+        <div class="queue-label">대기 목록</div>
+        <div class="queue-list" id="ready-ai-steering-queue"></div>
       </div>
     </div>
   `;
   steeringRefs = {
     title: steeringRoot.getElementById('ready-ai-steering-title'),
+    meta: steeringRoot.getElementById('ready-ai-steering-meta'),
+    launcherCount: steeringRoot.getElementById('ready-ai-steering-launcher-count'),
+    launcherRow: steeringRoot.getElementById('ready-ai-steering-launcher-row'),
     launcher: steeringRoot.getElementById('ready-ai-steering-launcher'),
     launcherTitle: steeringRoot.getElementById('ready-ai-steering-launcher-title'),
     launcherSub: steeringRoot.getElementById('ready-ai-steering-launcher-sub'),
     card: steeringRoot.getElementById('ready-ai-steering-card'),
     input: steeringRoot.getElementById('ready-ai-steering-input'),
-    quick: steeringRoot.getElementById('ready-ai-steering-quick'),
-    recentWrap: steeringRoot.getElementById('ready-ai-steering-recent-wrap'),
-    recent: steeringRoot.getElementById('ready-ai-steering-recent'),
+    primary: steeringRoot.getElementById('ready-ai-steering-primary'),
+    queueWrap: steeringRoot.getElementById('ready-ai-steering-queue-wrap'),
+    queue: steeringRoot.getElementById('ready-ai-steering-queue'),
     close: steeringRoot.getElementById('ready-ai-steering-close'),
-    focus: steeringRoot.getElementById('ready-ai-steering-focus'),
-    send: steeringRoot.getElementById('ready-ai-steering-send'),
     status: steeringRoot.getElementById('ready-ai-steering-status'),
   };
   const consume = (handler) => (event) => {
@@ -912,23 +1283,6 @@ function ensureSteeringUi() {
     try { event.stopPropagation(); } catch (_) {}
     handler?.(event);
   };
-  steeringRefs.quick.innerHTML = '';
-  for (const label of STEERING_QUICK_ACTIONS) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'chip';
-    btn.textContent = label;
-    btn.addEventListener('click', consume(() => {
-      const current = String(steeringRefs.input.value || '').trim();
-      steeringRefs.input.value = current ? `${current}
-${label}` : label;
-      steeringPanelOpen = true;
-      steeringRefs.input.focus();
-      setSteeringStatus('');
-      updateSteeringUi();
-    }));
-    steeringRefs.quick.appendChild(btn);
-  }
   steeringRefs.launcher.addEventListener('click', consume(() => {
     steeringPanelOpen = !steeringPanelOpen;
     updateSteeringUi();
@@ -940,11 +1294,8 @@ ${label}` : label;
     steeringPanelOpen = false;
     updateSteeringUi();
   }));
-  steeringRefs.focus.addEventListener('click', consume(() => {
-    commitSteeringPrompt({ sendNow: false });
-  }));
-  steeringRefs.send.addEventListener('click', consume(() => {
-    commitSteeringPrompt({ sendNow: true });
+  steeringRefs.primary.addEventListener('click', consume(() => {
+    submitSteeringInput();
   }));
   steeringRefs.input.addEventListener('keydown', (event) => {
     try { event.stopPropagation(); } catch (_) {}
@@ -955,15 +1306,14 @@ ${label}` : label;
       updateSteeringUi();
       return;
     }
-    if (event.key !== 'Enter') return;
-    if (event.shiftKey) return;
+    if (event.key !== 'Enter' || event.shiftKey) return;
     try { event.preventDefault(); } catch (_) {}
-    commitSteeringPrompt({ sendNow: !!(event.ctrlKey || event.metaKey) });
+    submitSteeringInput();
   });
   try { (document.body || document.documentElement).appendChild(steeringHost); } catch (_) {}
   applySteeringTheme();
   positionSteeringUi();
-  renderSteeringRecent();
+  renderSteeringQueue();
   return steeringRefs;
 }
 function acknowledgeCompletion() {
@@ -978,54 +1328,6 @@ function acknowledgeCompletion() {
     siteName: activeSite?.name,
   });
 }
-function commitSteeringPrompt(options = {}) {
-  const refs = ensureSteeringUi();
-  const text = String(refs?.input?.value || '').trim();
-  pushRecentSteeringPrompt(text);
-  if (!text) {
-    setSteeringStatus('추가 지시를 먼저 입력해주세요.', true);
-    try { refs?.input?.focus(); } catch (_) {}
-    return;
-  }
-  const composer = getActiveComposer();
-  if (!composer) {
-    setSteeringStatus('현재 페이지에서 입력창을 찾지 못했습니다.', true);
-    return;
-  }
-  const mergedText = mergeSteeringText(getCurrentComposerText(composer), text);
-  const ok = setControlValue(composer, mergedText);
-  if (!ok) {
-    setSteeringStatus('입력창에 지시를 넣지 못했습니다.', true);
-    return;
-  }
-  acknowledgeCompletion();
-  let sent = false;
-  if (options.sendNow) {
-    const sendButton = getActiveSendButton();
-    if (sendButton) {
-      try { sendButton.click(); sent = true; } catch (_) {}
-    }
-    if (!sent) sent = dispatchSubmitKey(composer);
-    if (sent) {
-      steeringClosedToken = steeringOfferToken;
-      steeringPanelOpen = false;
-      setSteeringStatus('바로 전송했습니다.');
-      try { refs.input.value = ''; } catch (_) {}
-      renderSteeringRecent();
-      updateSteeringUi();
-      return;
-    }
-    setSteeringStatus('입력창까지 채웠습니다. 전송은 직접 눌러주세요.');
-  } else {
-    setSteeringStatus('입력창을 채우고 포커스를 옮겼습니다.');
-  }
-  try { composer.focus({ preventScroll: false }); } catch (_) {}
-  steeringClosedToken = steeringOfferToken;
-  steeringPanelOpen = false;
-  try { refs.input.value = ''; } catch (_) {}
-  renderSteeringRecent();
-  updateSteeringUi();
-}
 function updateSteeringUi() {
   if (!monitoring || !steeringEnabled) {
     hideSteeringUi();
@@ -1034,15 +1336,23 @@ function updateSteeringUi() {
   const refs = ensureSteeringUi();
   if (!refs) return;
   refs.title.textContent = getSteeringStateLabel();
+  refs.meta.textContent = getSteeringQueueCountLabel();
+  if (refs.launcherCount) {
+    refs.launcherCount.textContent = getSteeringQueueCountLabel();
+    refs.launcherCount.style.display = 'inline-flex';
+  }
   refs.launcherTitle.textContent = getSteeringLauncherText();
   refs.launcherSub.textContent = getSteeringLauncherSubText();
+  refs.primary.textContent = getSteeringPrimaryLabel();
+  refs.primary.disabled = false;
+  if (refs.launcherRow) refs.launcherRow.style.display = 'inline-flex';
   refs.launcher.style.display = 'inline-flex';
   refs.card.style.display = steeringPanelOpen ? 'block' : 'none';
-  refs.recentWrap.style.display = steeringRecentPrompts.length ? 'block' : 'none';
-  if (!steeringPanelOpen) setSteeringStatus('');
   applySteeringTheme();
   positionSteeringUi();
-  renderSteeringRecent();
+  renderSteeringQueue();
+  syncSteeringQueueCount();
+  updateTitleBadge();
   steeringHost.style.display = 'block';
 }
 // =========================
@@ -1218,13 +1528,14 @@ function checkStatus() {
     // - 🟢 상태는 "클릭/스크롤"로만 ⚪로 돌아간다.
     if (isGenerating) {
       completionStatus = 'idle';
-      steeringPanelOpen = false;
-      steeringClosedToken = steeringOfferToken;
+      steeringLastCompletionAt = 0;
+      clearSteeringAutoSendTimer();
+      clearSteeringSendLock();
+      clearSteeringAwaitingResponseStart();
     } else {
       completionStatus = 'completed';
-      steeringOfferToken += 1;
-      steeringClosedToken = 0;
-      steeringPanelOpen = true;
+      steeringLastCompletionAt = Date.now();
+      scheduleSteeringQueueProcessing(STEERING_AUTO_SEND_DELAY_MS);
     }
     shouldSend = true;
   } else if (!hasSentInitialState) {
@@ -1251,6 +1562,22 @@ function checkStatus() {
   updateTitleBadge();
   updateSteeringUi();
 }
+function isEditableInteractionTarget(target) {
+  if (!target) return false;
+  try {
+    if (target.closest?.('textarea, input, [contenteditable="true"], [role="textbox"]')) return true;
+  } catch (_) {}
+  const tagName = String(target?.tagName || '').toLowerCase();
+  if (tagName === 'textarea' || tagName === 'input') return true;
+  if (target?.isContentEditable) return true;
+  return false;
+}
+function markTypingAcknowledged(event) {
+  if (isSteeringTarget(event?.target)) return;
+  if (isComposerAcknowledgeSuppressed()) return;
+  if (!isEditableInteractionTarget(event?.target)) return;
+  acknowledgeCompletion();
+}
 // 사용자 상호작용(클릭/스크롤) 시 🟢 -> ⚪ 전환 (요구사항)
 function markAsAcknowledged(event) {
   if (isSteeringTarget(event?.target)) return;
@@ -1270,6 +1597,8 @@ function bindHandlersOnce() {
   document.addEventListener('click', markAsAcknowledged, true);
   document.addEventListener('scroll', markAsAcknowledged, true);
   document.addEventListener('wheel', markAsAcknowledged, { passive: true, capture: true });
+  document.addEventListener('keydown', markTypingAcknowledged, true);
+  document.addEventListener('input', markTypingAcknowledged, true);
   // 탭 활성/비활성 전환 시에도 상태 재평가(백그라운드 완료 감지 보강)
   document.addEventListener('visibilitychange', scheduleCheck);
 }
@@ -1287,13 +1616,16 @@ function startMonitoring(site) {
   isGenerating = false;
   completionStatus = 'idle';
   hasSentInitialState = false;
-  steeringOfferToken = 0;
-  steeringClosedToken = 0;
+  steeringQueue = [];
+  steeringLastReportedQueueCount = null;
+  clearSteeringAutoSendTimer();
+  clearSteeringSendLock();
+  steeringProcessing = false;
   steeringPanelOpen = false;
+  clearSteeringAwaitingResponseStart();
   bindHandlersOnce();
   // 오픈 shadowRoot deep query/observe 활성화
-  try { initDeepRoots(); } catch (_) {}
-  bindHandlersOnce();
+  try { setDeepEnabled(shouldEnableDeepForSite(site)); } catch (_) {}
   // DOM 변화를 감지하여 체크 실행
   _observer = new MutationObserver(() => {
     scheduleCheck();
@@ -1333,9 +1665,13 @@ function stopMonitoring() {
   setDeepEnabled(false);
   _lastHeartbeatAt = 0;
   clearTitleBadge();
-  steeringOfferToken = 0;
-  steeringClosedToken = 0;
+  steeringQueue = [];
+  steeringLastReportedQueueCount = null;
+  clearSteeringAutoSendTimer();
+  clearSteeringSendLock();
+  steeringProcessing = false;
   steeringPanelOpen = false;
+  clearSteeringAwaitingResponseStart();
   hideSteeringUi();
 }
 let _bootRetryCount = 0;
