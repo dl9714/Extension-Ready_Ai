@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Jaeheon Extension",
-  "version": "0.1.0",
-  "description": "AI(ChatGPT, Gemini) 답변 완료 알림 및 상태 관리",
+  "version": "0.1.1",
+  "description": "AI(ChatGPT, Gemini 등) 답변 완료 알림 및 Steering 입력 지원",
   "background": {
     "service_worker": "src/background.js"
   },
   "action": {
     "default_popup": "src/popup.html",
     "default_icon": {
+      "16": "assets/bell_profile.png",
+      "32": "assets/bell_profile.png",
+      "48": "assets/bell_profile.png",
       "128": "assets/bell_profile.png"
     }
   },
@@ -18,7 +21,8 @@
     "tabs",
     "scripting",
     "alarms",
-    "idle"
+    "idle",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -36,5 +40,11 @@
       "all_frames": true,
       "match_about_blank": true
     }
-  ]
+  ],
+  "icons": {
+    "16": "assets/bell_profile.png",
+    "32": "assets/bell_profile.png",
+    "48": "assets/bell_profile.png",
+    "128": "assets/bell_profile.png"
+  }
 }
