@@ -18,7 +18,8 @@
     "tabs",
     "scripting",
     "alarms",
-    "idle"
+    "idle",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
