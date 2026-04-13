@@ -580,42 +580,40 @@ async function emitBatchCompletionAlert({ peakOrangeCount }) {
   }
 }
 function updateIcon(tabId) {
-  const state = tabStates[tabId]?.status || 'WHITE';
+  const tabState = tabStates[tabId] || {};
+  const state = tabState.status || 'WHITE';
+  const steeringQueueCount = Math.max(0, Number(tabState.steeringQueueCount) || 0);
   // 아이콘은 기존 리소스를 재사용(뱃지 색으로 구분이 핵심)
   let iconPath = 'assets/bell_profile.png';
-  // 배지는 "색"이 중요. 텍스트는 숨기기 위해 '1'을 쓰고 글자색을 배경과 동일하게 맞춘다.
-  // (공백만 넣으면 뱃지가 안 뜨는 브라우저/환경이 있어 안전장치)
-  let badgeText = '1';
+  let badgeText = steeringQueueCount > 0 ? (steeringQueueCount > 99 ? '99+' : String(steeringQueueCount)) : '1';
   let badgeBg = '#FFFFFF';
-  let badgeFg = '#FFFFFF';
+  let badgeFg = steeringQueueCount > 0 ? '#000000' : '#FFFFFF';
   switch (state) {
     case 'ORANGE':
       iconPath = 'assets/bell_pending.png';
       badgeBg = '#FFA500';
-      badgeFg = '#FFFFFF';
+      badgeFg = steeringQueueCount > 0 ? '#FFFFFF' : '#FFA500';
       break;
     case 'GREEN':
       iconPath = 'assets/bell_unread.png';
       badgeBg = '#7CFC00'; // 연두
-      badgeFg = '#000000';
+      badgeFg = steeringQueueCount > 0 ? '#000000' : '#7CFC00';
       break;
     case 'WHITE':
     default:
       iconPath = 'assets/bell_profile.png';
       badgeBg = '#FFFFFF';
-      badgeFg = '#000000';
+      badgeFg = steeringQueueCount > 0 ? '#000000' : '#FFFFFF';
       break;
   }
   // 아이콘 및 배지 적용
   safeActionCall(chrome.action.setIcon({ path: iconPath, tabId: tabId }));
-  // 배지 표시 OFF면 "완전 제거" (텍스트를 비우면 배지가 사라짐)
   if (!settings.badgeEnabled) {
     safeActionCall(chrome.action.setBadgeText({ text: '', tabId: tabId }));
     return;
   }
   safeActionCall(chrome.action.setBadgeText({ text: badgeText, tabId: tabId }));
   safeActionCall(chrome.action.setBadgeBackgroundColor({ color: badgeBg, tabId: tabId }));
-  // MV3: 배지 텍스트 색상 지정 가능(지원 안 하면 무시)
   if (chrome.action.setBadgeTextColor) {
     try {
       safeActionCall(chrome.action.setBadgeTextColor({ color: badgeFg, tabId: tabId }));
@@ -699,6 +697,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         windowId: sender.tab?.windowId,
         lastUpdateAt: now,
         orangeSinceAt: prevStatus === 'ORANGE' ? (prevState?.orangeSinceAt || now) : now,
+        steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
       handleOrangeWaveChange(prevOrangeCount, getOrangeTabCount());
       updateIcon(tabId);
@@ -715,6 +714,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
         lastUpdateAt: now,
+        steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
       updateIcon(tabId);
       return;
@@ -727,6 +727,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
         lastUpdateAt: now,
+        steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
       handleOrangeWaveChange(prevOrangeCount, getOrangeTabCount());
       updateIcon(tabId);
@@ -745,10 +746,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
         lastUpdateAt: now,
+        steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
       updateIcon(tabId);
       return;
     }
+  }
+  if (message.action === 'steering_queue_update') {
+    const prevState = tabStates[tabId] ? { ...tabStates[tabId] } : {};
+    tabStates[tabId] = {
+      ...prevState,
+      status: prevState.status || 'WHITE',
+      platform: message.platform || prevState.platform || '',
+      siteName: message.siteName || prevState.siteName || '',
+      windowId: sender.tab?.windowId,
+      lastUpdateAt: Date.now(),
+      steeringQueueCount: Math.max(0, Number(message.count) || 0),
+    };
+    updateIcon(tabId);
+    return;
   }
   // content 쪽 사용자 상호작용(클릭/스크롤)로 🟢 -> ⚪
   if (message.action === 'user_activity') {
