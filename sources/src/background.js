@@ -27,6 +27,8 @@ let frameStates = {}; // { tabId: { frameId: { isGenerating, platform, siteName,
 const STORAGE_KEYS = {
   DND_MODE: 'dndMode',
   BADGE_ENABLED: 'badgeEnabled',
+  BADGE_COUNT_ENABLED: 'badgeCountEnabled',
+  COMPLETION_HISTORY_ENABLED: 'completionHistoryEnabled',
   INDIVIDUAL_COMPLETION_NOTIFICATION_ENABLED: 'individualCompletionNotificationEnabled',
   INDIVIDUAL_COMPLETION_SOUND: 'individualCompletionSound',
   BATCH_COMPLETION_NOTIFICATION_ENABLED: 'batchCompletionNotificationEnabled',
@@ -45,11 +47,32 @@ const STORAGE_KEYS = {
   GEMINI_PROBE_ONLY_IDLE: 'geminiProbeOnlyIdle',
   GEMINI_PROBE_IDLE_SEC: 'geminiProbeIdleSec',
   GEMINI_PROBE_MIN_ORANGE_SEC: 'geminiProbeMinOrangeSec',
+  NOTIFICATION_SNOOZE_UNTIL: 'notificationSnoozeUntil',
+  COMPLETION_HISTORY: 'completionHistory',
+  QUIET_HOURS_ENABLED: 'quietHoursEnabled',
+  QUIET_HOURS_START: 'quietHoursStart',
+  QUIET_HOURS_END: 'quietHoursEnd',
+  CUSTOM_TAB_TITLES: 'customTabTitles',
 };
 const GEMINI_PROBE_ALARM = 'ready_ai_gemini_probe';
 const GEMINI_PROBE_MIN_PERIOD_MIN = 1; // chrome.alarms 최소 1분
 const GEMINI_PROBE_NUDGE_COOLDOWN_MS = 30_000; // 너무 자주 탭 전환하면 거슬림
 const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen.html';
+const CONTENT_SCRIPT_FILES = Object.freeze([
+  'src/sites.js',
+  'src/content/part-01.js',
+  'src/content/part-02.js',
+  'src/content/part-03.js',
+  'src/content/part-04.js',
+  'src/content/part-05.js',
+  'src/content/part-06.js',
+  'src/content/part-07.js',
+  'src/content/part-08.js',
+  'src/content/part-09.js',
+  'src/content/part-10.js',
+  'src/content/part-11.js',
+  'src/content/part-12.js',
+]);
 const SOUND_PRESETS = Object.freeze({
   off: 'off',
   soft: 'soft',
@@ -61,6 +84,8 @@ const SOUND_PRESETS = Object.freeze({
 let settings = {
   dndMode: false,
   badgeEnabled: true,
+  badgeCountEnabled: true,
+  completionHistoryEnabled: true,
   individualCompletionNotificationEnabled: true,
   individualCompletionSound: SOUND_PRESETS.soft,
   batchCompletionNotificationEnabled: true,
@@ -77,6 +102,10 @@ let settings = {
   geminiProbeOnlyIdle: true,
   geminiProbeIdleSec: 60,
   geminiProbeMinOrangeSec: 12,
+  notificationSnoozeUntil: 0,
+  quietHoursEnabled: false,
+  quietHoursStart: '23:00',
+  quietHoursEnd: '08:00',
 };
 const notificationTargets = {};
 let batchWave = {
@@ -85,7 +114,152 @@ let batchWave = {
   peakOrangeCount: 0,
 };
 let creatingOffscreenDocument = null;
+const COMPLETION_HISTORY_LIMIT = 40;
 let _siteConfigCache = { enabledSites: null, customSites: [] };
+let completionHistoryCache = [];
+let completionHistoryFlushTimer = null;
+let tabMetaCache = {}; // { [tabId]: { id, title, url, active, discarded, windowId } }
+let tabCacheInitialized = false;
+let actionStateCache = {}; // { [tabId]: signature }
+let dashboardVersion = 1;
+let customTabTitles = {};
+let customTabTitlesFlushTimer = null;
+let lastPersistedCustomTabTitlesSignature = '';
+let dashboardMetaCache = {
+  itemsCount: 0,
+  hasOrange: false,
+  hasGreen: false,
+};
+let dashboardItemsCacheVersion = 0;
+let dashboardItemsCache = [];
+const CUSTOM_TAB_TITLE_MAX_LENGTH = 80;
+const LAST_UPDATE_HEARTBEAT_THROTTLE_MS = 30_000;
+function refreshDashboardMetaCache() {
+  const states = Object.values(tabStates);
+  dashboardMetaCache = {
+    itemsCount: states.length,
+    hasOrange: states.some((state) => state?.status === 'ORANGE'),
+    hasGreen: states.some((state) => state?.status === 'GREEN'),
+  };
+}
+function bumpDashboardVersion() {
+  refreshDashboardMetaCache();
+  dashboardItemsCacheVersion = 0;
+  dashboardVersion += 1;
+}
+function getActiveTabIdForWindow(windowId) {
+  if (typeof windowId !== 'number') return null;
+  for (const id of Object.keys(tabMetaCache)) {
+    const meta = tabMetaCache[id];
+    if (!meta) continue;
+    if (meta.windowId === windowId && meta.active) return Number(id);
+  }
+  return null;
+}
+function normalizeCustomTabTitleValue(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, CUSTOM_TAB_TITLE_MAX_LENGTH);
+}
+function normalizeCustomTabTitlesMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, value] of Object.entries(raw)) {
+    const tabId = parseInt(key, 10);
+    if (!Number.isFinite(tabId)) continue;
+    const title = normalizeCustomTabTitleValue(value);
+    if (!title) continue;
+    out[String(tabId)] = title;
+  }
+  return out;
+}
+function flushCustomTabTitlesNow() {
+  if (customTabTitlesFlushTimer) {
+    clearTimeout(customTabTitlesFlushTimer);
+    customTabTitlesFlushTimer = null;
+  }
+  const signature = JSON.stringify(customTabTitles);
+  if (signature === lastPersistedCustomTabTitlesSignature) return;
+  lastPersistedCustomTabTitlesSignature = signature;
+  try {
+    chrome.storage.local.set({ [STORAGE_KEYS.CUSTOM_TAB_TITLES]: customTabTitles });
+  } catch (_) {}
+}
+function persistCustomTabTitles() {
+  if (customTabTitlesFlushTimer) return;
+  customTabTitlesFlushTimer = setTimeout(() => {
+    customTabTitlesFlushTimer = null;
+    flushCustomTabTitlesNow();
+  }, 150);
+}
+function getCustomTabTitleForTab(tabId) {
+  if (!Number.isFinite(tabId)) return '';
+  return normalizeCustomTabTitleValue(customTabTitles[String(tabId)] || '');
+}
+function setCustomTabTitleForTab(tabId, title) {
+  if (!Number.isFinite(tabId)) return '';
+  const normalized = normalizeCustomTabTitleValue(title);
+  if (!normalized) return '';
+  customTabTitles[String(tabId)] = normalized;
+  if (tabMetaCache[tabId]) tabMetaCache[tabId] = { ...(tabMetaCache[tabId] || {}), title: normalized };
+  persistCustomTabTitles();
+  bumpDashboardVersion();
+  return normalized;
+}
+function clearCustomTabTitleForTab(tabId) {
+  if (!Number.isFinite(tabId)) return false;
+  const key = String(tabId);
+  const existed = Object.prototype.hasOwnProperty.call(customTabTitles, key);
+  if (!existed) return false;
+  delete customTabTitles[key];
+  persistCustomTabTitles();
+  bumpDashboardVersion();
+  return true;
+}
+function notifyCustomTabTitleUpdated(tabId, title) {
+  notifyCustomTabTitleUpdated(tabId, title)
+}
+function notifyCustomTabTitleCleared(tabId) {
+  notifyCustomTabTitleCleared(tabId)
+}
+function setCustomTabTitlesForTabs(items) {
+  const targets = Array.isArray(items) ? items : [];
+  const changed = [];
+  let applied = 0;
+  for (const item of targets) {
+    const tabId = clampInt(item?.tabId, NaN, 0, Number.MAX_SAFE_INTEGER);
+    const title = normalizeCustomTabTitleValue(item?.title || '');
+    if (!Number.isFinite(tabId) || tabId <= 0 || !title) continue;
+    const key = String(tabId);
+    if (customTabTitles[key] === title) continue;
+    customTabTitles[key] = title;
+    if (tabMetaCache[tabId]) tabMetaCache[tabId] = { ...(tabMetaCache[tabId] || {}), title };
+    changed.push({ tabId, title });
+    applied += 1;
+  }
+  if (applied > 0) {
+    persistCustomTabTitles();
+    bumpDashboardVersion();
+    for (const item of changed) notifyCustomTabTitleUpdated(item.tabId, item.title);
+  }
+  return { ok: applied > 0, count: applied, total: targets.length, changed };
+}
+function clearCustomTabTitlesForTabs(tabIds) {
+  const targets = Array.isArray(tabIds) ? tabIds : [];
+  const cleared = [];
+  for (const rawTabId of targets) {
+    const tabId = clampInt(rawTabId, NaN, 0, Number.MAX_SAFE_INTEGER);
+    if (!Number.isFinite(tabId) || tabId <= 0) continue;
+    const key = String(tabId);
+    if (!Object.prototype.hasOwnProperty.call(customTabTitles, key)) continue;
+    delete customTabTitles[key];
+    cleared.push(tabId);
+  }
+  if (cleared.length > 0) {
+    persistCustomTabTitles();
+    bumpDashboardVersion();
+    for (const tabId of cleared) notifyCustomTabTitleCleared(tabId);
+  }
+  return { ok: cleared.length > 0, count: cleared.length, total: targets.length, cleared };
+}
 function getSiteConfig(cb) {
   const sitesApi = globalThis?.ReadyAi?.sites;
   const enabledKey = sitesApi?.STORAGE_KEYS?.ENABLED_SITES || 'enabledSites';
@@ -125,6 +299,53 @@ function clampNumber(v, fallback, min, max) {
   if (typeof max === 'number' && out > max) return max;
   return out;
 }
+function isNotificationSnoozed() {
+  return Number.isFinite(settings.notificationSnoozeUntil) && settings.notificationSnoozeUntil > Date.now();
+}
+function normalizeClockTime(value, fallback = '23:00') {
+  const raw = String(value || '').trim();
+  const m = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!m) return fallback;
+  const hh = Math.max(0, Math.min(23, parseInt(m[1], 10) || 0));
+  const mm = Math.max(0, Math.min(59, parseInt(m[2], 10) || 0));
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+function clockTimeToMinutes(value, fallback = 0) {
+  const normalized = normalizeClockTime(value, '00:00');
+  const [hh, mm] = normalized.split(':').map((v) => parseInt(v, 10) || 0);
+  return (hh * 60) + mm;
+}
+function isQuietHoursActive(ts = Date.now()) {
+  if (!settings.quietHoursEnabled) return false;
+  const start = clockTimeToMinutes(settings.quietHoursStart, 23 * 60);
+  const end = clockTimeToMinutes(settings.quietHoursEnd, 8 * 60);
+  if (start === end) return true;
+  const d = new Date(ts);
+  const nowMinutes = (d.getHours() * 60) + d.getMinutes();
+  if (start < end) return nowMinutes >= start && nowMinutes < end;
+  return nowMinutes >= start || nowMinutes < end;
+}
+function getNotificationSuppressionReason() {
+  if (settings.dndMode) return 'dnd';
+  if (isNotificationSnoozed()) return 'snooze';
+  if (isQuietHoursActive()) return 'quiet_hours';
+  return '';
+}
+function scheduleCompletionHistoryFlush() {
+  if (completionHistoryFlushTimer) return;
+  completionHistoryFlushTimer = setTimeout(() => {
+    completionHistoryFlushTimer = null;
+    try {
+      chrome.storage.local.set({ [STORAGE_KEYS.COMPLETION_HISTORY]: completionHistoryCache.slice(0, COMPLETION_HISTORY_LIMIT) });
+    } catch (_) {}
+  }, 250);
+}
+function pushCompletionHistory(entry) {
+  if (settings.completionHistoryEnabled === false) return;
+  completionHistoryCache = [entry, ...completionHistoryCache].slice(0, COMPLETION_HISTORY_LIMIT);
+  bumpDashboardVersion();
+  scheduleCompletionHistoryFlush();
+}
 function pTabsQuery(query) {
   return new Promise((resolve) => {
     try {
@@ -155,6 +376,65 @@ function pTabsSendMessage(tabId, message) {
       resolve(false);
     }
   });
+}
+function upsertTabMetaFromTab(tab) {
+  if (!tab || typeof tab.id !== 'number') return;
+  tabMetaCache[tab.id] = {
+    ...(tabMetaCache[tab.id] || {}),
+    id: tab.id,
+    title: tab.title || '',
+    url: tab.url || '',
+    active: !!tab.active,
+    discarded: !!tab.discarded,
+    windowId: typeof tab.windowId === 'number' ? tab.windowId : (tabMetaCache[tab.id]?.windowId ?? null),
+  };
+}
+function ensureTabMetaCache(cb) {
+  if (tabCacheInitialized) {
+    cb?.(tabMetaCache);
+    return;
+  }
+  chrome.tabs.query({}, (tabs) => {
+    tabMetaCache = {};
+    for (const tab of (Array.isArray(tabs) ? tabs : [])) upsertTabMetaFromTab(tab);
+    tabCacheInitialized = true;
+    cb?.(tabMetaCache);
+  });
+}
+function getDashboardItemsFromCache() {
+  if (dashboardItemsCacheVersion === dashboardVersion && Array.isArray(dashboardItemsCache)) {
+    return dashboardItemsCache.slice();
+  }
+  dashboardItemsCache = Object.entries(tabStates).map(([rawTabId, state]) => {
+    const tabId = parseInt(rawTabId, 10);
+    const tab = tabMetaCache[tabId] || null;
+    const url = tab?.url || '';
+    let host = '';
+    try { host = new URL(url).host; } catch (_) {}
+    const customTabTitle = getCustomTabTitleForTab(tabId);
+    return {
+      tabId,
+      status: state?.status || 'WHITE',
+      platform: state?.platform || '',
+      siteName: state?.siteName || '',
+      lastUpdateAt: state?.lastUpdateAt || 0,
+      orangeSinceAt: state?.orangeSinceAt || 0,
+      steeringQueueCount: Math.max(0, Number(state?.steeringQueueCount) || 0),
+      title: tab?.title || customTabTitle || state?.siteName || host || `탭 ${tabId}`,
+      customTabTitle,
+      hasCustomTabTitle: !!customTabTitle,
+      url,
+      host,
+      active: !!tab?.active,
+      discarded: !!tab?.discarded,
+      windowId: tab?.windowId || state?.windowId || null,
+    };
+  }).sort((a, b) => {
+    const rank = (v) => v === 'ORANGE' ? 3 : (v === 'GREEN' ? 2 : 1);
+    return rank(b.status) - rank(a.status) || (b.lastUpdateAt || 0) - (a.lastUpdateAt || 0);
+  });
+  dashboardItemsCacheVersion = dashboardVersion;
+  return dashboardItemsCache.slice();
 }
 function pScriptingExec(tabId, files, allFrames = true) {
   return new Promise((resolve) => {
@@ -269,7 +549,7 @@ async function ensureContentScripts(tab) {
   const alive = await pTabsSendMessage(tabId, { action: 'ping' });
   if (alive) return true;
   // 2) 없으면 강제 주입(필요 권한: "scripting")
-  const injected = await pScriptingExec(tabId, ['src/sites.js', 'src/content.js'], true);
+  const injected = await pScriptingExec(tabId, CONTENT_SCRIPT_FILES, true);
   if (!injected) return false;
   // 3) 주입 직후 즉시 체크 요청
   await pTabsSendMessage(tabId, { action: 'force_check', reason: 'inject' });
@@ -285,6 +565,7 @@ function pIdleQueryState(idleSec) {
   });
 }
 function clearBadgesForAllTabs() {
+  actionStateCache = {};
   // 배지 OFF 시, "이전에 이미 찍혀 있던" 배지도 남지 않도록 전체 탭 기준으로 지움
   chrome.tabs.query({}, (tabs) => {
     for (const t of tabs) {
@@ -317,7 +598,10 @@ function ensureGeminiProbeAlarm() {
 chrome.storage.local.get([
   STORAGE_KEYS.DND_MODE,
   STORAGE_KEYS.BADGE_ENABLED,
+  STORAGE_KEYS.BADGE_COUNT_ENABLED,
+  STORAGE_KEYS.COMPLETION_HISTORY_ENABLED,
   STORAGE_KEYS.INDIVIDUAL_COMPLETION_NOTIFICATION_ENABLED,
+  STORAGE_KEYS.INDIVIDUAL_COMPLETION_SOUND,
   STORAGE_KEYS.BATCH_COMPLETION_NOTIFICATION_ENABLED,
   STORAGE_KEYS.BATCH_COMPLETION_SOUND,
   STORAGE_KEYS.BATCH_COMPLETION_THRESHOLD,
@@ -332,9 +616,17 @@ chrome.storage.local.get([
   STORAGE_KEYS.GEMINI_PROBE_ONLY_IDLE,
   STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC,
   STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC,
+  STORAGE_KEYS.NOTIFICATION_SNOOZE_UNTIL,
+  STORAGE_KEYS.COMPLETION_HISTORY,
+  STORAGE_KEYS.QUIET_HOURS_ENABLED,
+  STORAGE_KEYS.QUIET_HOURS_START,
+  STORAGE_KEYS.QUIET_HOURS_END,
+  STORAGE_KEYS.CUSTOM_TAB_TITLES,
 ], (res) => {
   if (typeof res[STORAGE_KEYS.DND_MODE] === 'boolean') settings.dndMode = res[STORAGE_KEYS.DND_MODE];
   if (typeof res[STORAGE_KEYS.BADGE_ENABLED] === 'boolean') settings.badgeEnabled = res[STORAGE_KEYS.BADGE_ENABLED];
+  if (typeof res[STORAGE_KEYS.BADGE_COUNT_ENABLED] === 'boolean') settings.badgeCountEnabled = res[STORAGE_KEYS.BADGE_COUNT_ENABLED];
+  if (typeof res[STORAGE_KEYS.COMPLETION_HISTORY_ENABLED] === 'boolean') settings.completionHistoryEnabled = res[STORAGE_KEYS.COMPLETION_HISTORY_ENABLED];
   if (typeof res[STORAGE_KEYS.INDIVIDUAL_COMPLETION_NOTIFICATION_ENABLED] === 'boolean') settings.individualCompletionNotificationEnabled = res[STORAGE_KEYS.INDIVIDUAL_COMPLETION_NOTIFICATION_ENABLED];
   if (typeof res[STORAGE_KEYS.INDIVIDUAL_COMPLETION_SOUND] === 'string') settings.individualCompletionSound = normalizeSoundKey(res[STORAGE_KEYS.INDIVIDUAL_COMPLETION_SOUND], SOUND_PRESETS.soft);
   if (typeof res[STORAGE_KEYS.BATCH_COMPLETION_NOTIFICATION_ENABLED] === 'boolean') settings.batchCompletionNotificationEnabled = res[STORAGE_KEYS.BATCH_COMPLETION_NOTIFICATION_ENABLED];
@@ -351,15 +643,30 @@ chrome.storage.local.get([
   if (res[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN] != null) settings.geminiProbePeriodMin = clampNumber(res[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN], 1, 1, 60);
   if (res[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC] != null) settings.geminiProbeIdleSec = clampInt(res[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC], 60, 15, 3600);
   if (res[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC] != null) settings.geminiProbeMinOrangeSec = clampInt(res[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC], 12, 3, 600);
+  if (res[STORAGE_KEYS.NOTIFICATION_SNOOZE_UNTIL] != null) settings.notificationSnoozeUntil = clampInt(res[STORAGE_KEYS.NOTIFICATION_SNOOZE_UNTIL], 0, 0, Number.MAX_SAFE_INTEGER);
+  completionHistoryCache = Array.isArray(res?.[STORAGE_KEYS.COMPLETION_HISTORY]) ? res[STORAGE_KEYS.COMPLETION_HISTORY].slice(0, COMPLETION_HISTORY_LIMIT) : [];
+  if (typeof res[STORAGE_KEYS.QUIET_HOURS_ENABLED] === 'boolean') settings.quietHoursEnabled = !!res[STORAGE_KEYS.QUIET_HOURS_ENABLED];
+  if (res[STORAGE_KEYS.QUIET_HOURS_START] != null) settings.quietHoursStart = normalizeClockTime(res[STORAGE_KEYS.QUIET_HOURS_START], '23:00');
+  if (res[STORAGE_KEYS.QUIET_HOURS_END] != null) settings.quietHoursEnd = normalizeClockTime(res[STORAGE_KEYS.QUIET_HOURS_END], '08:00');
+  customTabTitles = normalizeCustomTabTitlesMap(res?.[STORAGE_KEYS.CUSTOM_TAB_TITLES]);
+  lastPersistedCustomTabTitlesSignature = JSON.stringify(customTabTitles);
   if (settings.badgeEnabled === false) clearBadgesForAllTabs();
   ensureGeminiProbeAlarm();
 });
 // 설정 변경 감지 (Popup에서 변경 시)
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes[STORAGE_KEYS.DND_MODE]) settings.dndMode = changes[STORAGE_KEYS.DND_MODE].newValue;
+  let dashboardRelevantChanged = false;
+  if (changes[STORAGE_KEYS.DND_MODE]) {
+    settings.dndMode = changes[STORAGE_KEYS.DND_MODE].newValue;
+    dashboardRelevantChanged = true;
+  }
   if (changes.enabledSites || changes.customSites) {
     // 모니터링 대상에서 빠진 탭은 상태를 지워서 "등록된 사이트만" 관리되도록.
     getSiteConfig(() => purgeDisabledTabs());
+  }
+  if (changes[STORAGE_KEYS.CUSTOM_TAB_TITLES]) {
+    customTabTitles = normalizeCustomTabTitlesMap(changes[STORAGE_KEYS.CUSTOM_TAB_TITLES].newValue);
+    dashboardRelevantChanged = true;
   }
   if (changes[STORAGE_KEYS.BADGE_ENABLED]) {
     settings.badgeEnabled = changes[STORAGE_KEYS.BADGE_ENABLED].newValue;
@@ -368,6 +675,18 @@ chrome.storage.onChanged.addListener((changes) => {
     } else {
       refreshTrackedTabs();
     }
+  }
+  if (changes[STORAGE_KEYS.BADGE_COUNT_ENABLED]) {
+    settings.badgeCountEnabled = !!changes[STORAGE_KEYS.BADGE_COUNT_ENABLED].newValue;
+    refreshTrackedTabs();
+  }
+  if (changes[STORAGE_KEYS.COMPLETION_HISTORY_ENABLED]) {
+    settings.completionHistoryEnabled = !!changes[STORAGE_KEYS.COMPLETION_HISTORY_ENABLED].newValue;
+    if (!settings.completionHistoryEnabled) {
+      completionHistoryCache = [];
+      try { chrome.storage.local.set({ [STORAGE_KEYS.COMPLETION_HISTORY]: [] }); } catch (_) {}
+    }
+    dashboardRelevantChanged = true;
   }
   if (changes[STORAGE_KEYS.INDIVIDUAL_COMPLETION_NOTIFICATION_ENABLED]) settings.individualCompletionNotificationEnabled = !!changes[STORAGE_KEYS.INDIVIDUAL_COMPLETION_NOTIFICATION_ENABLED].newValue;
   if (changes[STORAGE_KEYS.INDIVIDUAL_COMPLETION_SOUND]) settings.individualCompletionSound = normalizeSoundKey(changes[STORAGE_KEYS.INDIVIDUAL_COMPLETION_SOUND].newValue, SOUND_PRESETS.soft);
@@ -386,6 +705,26 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN]) settings.geminiProbePeriodMin = clampNumber(changes[STORAGE_KEYS.GEMINI_PROBE_PERIOD_MIN].newValue, 1, 1, 60);
   if (changes[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC]) settings.geminiProbeIdleSec = clampInt(changes[STORAGE_KEYS.GEMINI_PROBE_IDLE_SEC].newValue, 60, 15, 3600);
   if (changes[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC]) settings.geminiProbeMinOrangeSec = clampInt(changes[STORAGE_KEYS.GEMINI_PROBE_MIN_ORANGE_SEC].newValue, 12, 3, 600);
+  if (changes[STORAGE_KEYS.NOTIFICATION_SNOOZE_UNTIL]) {
+    settings.notificationSnoozeUntil = clampInt(changes[STORAGE_KEYS.NOTIFICATION_SNOOZE_UNTIL].newValue, 0, 0, Number.MAX_SAFE_INTEGER);
+    dashboardRelevantChanged = true;
+  }
+  if (changes[STORAGE_KEYS.COMPLETION_HISTORY]) {
+    completionHistoryCache = Array.isArray(changes[STORAGE_KEYS.COMPLETION_HISTORY].newValue) ? changes[STORAGE_KEYS.COMPLETION_HISTORY].newValue.slice(0, COMPLETION_HISTORY_LIMIT) : [];
+    dashboardRelevantChanged = true;
+  }
+  if (changes[STORAGE_KEYS.QUIET_HOURS_ENABLED]) {
+    settings.quietHoursEnabled = !!changes[STORAGE_KEYS.QUIET_HOURS_ENABLED].newValue;
+    dashboardRelevantChanged = true;
+  }
+  if (changes[STORAGE_KEYS.QUIET_HOURS_START]) {
+    settings.quietHoursStart = normalizeClockTime(changes[STORAGE_KEYS.QUIET_HOURS_START].newValue, '23:00');
+    dashboardRelevantChanged = true;
+  }
+  if (changes[STORAGE_KEYS.QUIET_HOURS_END]) {
+    settings.quietHoursEnd = normalizeClockTime(changes[STORAGE_KEYS.QUIET_HOURS_END].newValue, '08:00');
+    dashboardRelevantChanged = true;
+  }
   // 관련 설정이 바뀌었으면 알람 갱신
   if (
     changes[STORAGE_KEYS.GEMINI_PROBE_ENABLED] ||
@@ -393,6 +732,7 @@ chrome.storage.onChanged.addListener((changes) => {
   ) {
     ensureGeminiProbeAlarm();
   }
+  if (dashboardRelevantChanged) bumpDashboardVersion();
 });
 function resolveSiteForUrl(url) {
   const sitesApi = globalThis?.ReadyAi?.sites;
@@ -551,7 +891,14 @@ function createBasicNotification(notificationId, title, message) {
   } catch (_) {}
 }
 async function emitSingleCompletionAlert({ tabId, platform, siteName }) {
-  if (settings.dndMode) return;
+  pushCompletionHistory({
+    kind: 'single',
+    at: Date.now(),
+    tabId,
+    platform: platform || '',
+    siteName: siteName || buildSingleNotificationTitle(platform, siteName),
+  });
+  if (getNotificationSuppressionReason()) return;
   const title = buildSingleNotificationTitle(platform, siteName);
   if (settings.individualCompletionNotificationEnabled) {
     const notificationId = `ready_ai_single_${tabId}_${Date.now()}`;
@@ -564,7 +911,13 @@ async function emitSingleCompletionAlert({ tabId, platform, siteName }) {
   }
 }
 async function emitBatchCompletionAlert({ peakOrangeCount }) {
-  if (settings.dndMode) return;
+  pushCompletionHistory({
+    kind: 'batch',
+    at: Date.now(),
+    peakOrangeCount: clampInt(peakOrangeCount, 0, 0, 999),
+    siteName: `대기 ${peakOrangeCount}개 전체 완료`,
+  });
+  if (getNotificationSuppressionReason()) return;
   if (settings.batchCompletionNotificationEnabled) {
     const notificationId = `ready_ai_batch_${Date.now()}`;
     notificationTargets[notificationId] = { type: 'batch' };
@@ -585,7 +938,8 @@ function updateIcon(tabId) {
   const steeringQueueCount = Math.max(0, Number(tabState.steeringQueueCount) || 0);
   // 아이콘은 기존 리소스를 재사용(뱃지 색으로 구분이 핵심)
   let iconPath = 'assets/bell_profile.png';
-  let badgeText = steeringQueueCount > 0 ? (steeringQueueCount > 99 ? '99+' : String(steeringQueueCount)) : '1';
+  const computedBadgeText = steeringQueueCount > 0 ? (steeringQueueCount > 99 ? '99+' : String(steeringQueueCount)) : '1';
+  let badgeText = settings.badgeCountEnabled === false ? ' ' : computedBadgeText;
   let badgeBg = '#FFFFFF';
   let badgeFg = steeringQueueCount > 0 ? '#000000' : '#FFFFFF';
   switch (state) {
@@ -606,6 +960,16 @@ function updateIcon(tabId) {
       badgeFg = steeringQueueCount > 0 ? '#000000' : '#FFFFFF';
       break;
   }
+  const signature = JSON.stringify({
+    iconPath,
+    badgeEnabled: !!settings.badgeEnabled,
+    badgeCountEnabled: !!settings.badgeCountEnabled,
+    badgeText: settings.badgeEnabled ? badgeText : '',
+    badgeBg: settings.badgeEnabled ? badgeBg : '',
+    badgeFg: settings.badgeEnabled ? badgeFg : '',
+  });
+  if (actionStateCache[tabId] === signature) return;
+  actionStateCache[tabId] = signature;
   // 아이콘 및 배지 적용
   safeActionCall(chrome.action.setIcon({ path: iconPath, tabId: tabId }));
   if (!settings.badgeEnabled) {
@@ -634,12 +998,82 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const popupScopedActions = new Set([
+    'get_custom_tab_title_for_tab',
+    'set_custom_tab_title_for_tab',
+    'clear_custom_tab_title_for_tab',
+    'get_custom_tab_titles_map',
+    'batch_set_custom_tab_titles_for_tabs',
+    'batch_clear_custom_tab_titles_for_tabs',
+  ]);
+  if (!popupScopedActions.has(message?.action)) return;
+  const tabId = clampInt(message?.tabId, NaN, 0, Number.MAX_SAFE_INTEGER);
+  if (message.action === 'get_custom_tab_titles_map') {
+    sendResponse({ ok: true, titles: { ...customTabTitles } });
+    return;
+  }
+  if (message.action === 'batch_set_custom_tab_titles_for_tabs') {
+    const result = setCustomTabTitlesForTabs(message.items);
+    sendResponse({ ok: true, count: result.count, total: result.total, changed: result.changed });
+    return;
+  }
+  if (message.action === 'batch_clear_custom_tab_titles_for_tabs') {
+    const result = clearCustomTabTitlesForTabs(message.tabIds);
+    sendResponse({ ok: true, count: result.count, total: result.total, cleared: result.cleared });
+    return;
+  }
+  if (!Number.isFinite(tabId) || tabId <= 0) {
+    sendResponse({ ok: false, message: '탭을 찾지 못했습니다.' });
+    return;
+  }
+  if (message.action === 'get_custom_tab_title_for_tab') {
+    sendResponse({ ok: true, title: getCustomTabTitleForTab(tabId) });
+    return;
+  }
+  if (message.action === 'set_custom_tab_title_for_tab') {
+    const title = setCustomTabTitleForTab(tabId, message.title || '');
+    if (!title) {
+      sendResponse({ ok: false, message: '탭 이름이 비어 있습니다.' });
+      return;
+    }
+    notifyCustomTabTitleUpdated(tabId, title)
+    sendResponse({ ok: true, title });
+    return;
+  }
+  if (message.action === 'clear_custom_tab_title_for_tab') {
+    clearCustomTabTitleForTab(tabId);
+    notifyCustomTabTitleCleared(tabId)
+    sendResponse({ ok: true });
+    return;
+  }
+});
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab) return;
   const tabId = sender.tab.id;
   const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
   // content script(iframe)에서 top tab URL이 필요할 때 사용
   if (message.action === 'get_tab_url') {
     sendResponse({ url: sender.tab?.url || '' });
+    return;
+  }
+  if (message.action === 'get_custom_tab_title') {
+    sendResponse({ ok: true, title: getCustomTabTitleForTab(tabId) });
+    return;
+  }
+  if (message.action === 'set_custom_tab_title') {
+    const title = setCustomTabTitleForTab(tabId, message.title || '');
+    if (!title) {
+      sendResponse({ ok: false, message: '탭 이름이 비어 있습니다.' });
+      return;
+    }
+    notifyCustomTabTitleUpdated(tabId, title)
+    sendResponse({ ok: true, title });
+    return;
+  }
+  if (message.action === 'clear_custom_tab_title') {
+    clearCustomTabTitleForTab(tabId);
+    notifyCustomTabTitleCleared(tabId)
+    sendResponse({ ok: true });
     return;
   }
   function upsertFrameState(isGenerating, platform, siteName) {
@@ -689,17 +1123,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const nextSiteName = agg.siteName || siteName || prevState?.siteName || '';
     // 1) "프레임 중 하나라도" 생성중이면 ORANGE
     if (agg.anyGen) {
+      const nextStatus = 'ORANGE';
+      const meaningfulChanged = !prevState
+        || prevStatus !== nextStatus
+        || (prevState?.platform || '') !== nextPlatform
+        || (prevState?.siteName || '') !== nextSiteName
+        || (prevState?.windowId || null) !== (sender.tab?.windowId || null);
       tabStates[tabId] = {
         ...prevState,
-        status: 'ORANGE',
+        status: nextStatus,
         platform: nextPlatform,
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
-        lastUpdateAt: now,
+        lastSeenAt: now,
+        lastUpdateAt: meaningfulChanged
+          ? now
+          : (((now - (prevState?.lastUpdateAt || 0)) >= LAST_UPDATE_HEARTBEAT_THROTTLE_MS) ? now : (prevState?.lastUpdateAt || now)),
         orangeSinceAt: prevStatus === 'ORANGE' ? (prevState?.orangeSinceAt || now) : now,
         steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
       handleOrangeWaveChange(prevOrangeCount, getOrangeTabCount());
+      if (meaningfulChanged) bumpDashboardVersion();
       updateIcon(tabId);
       return;
     }
@@ -713,9 +1157,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         platform: nextPlatform,
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
+        lastSeenAt: now,
         lastUpdateAt: now,
         steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
+      bumpDashboardVersion();
       updateIcon(tabId);
       return;
     }
@@ -726,43 +1172,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         platform: nextPlatform,
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
+        lastSeenAt: now,
         lastUpdateAt: now,
         steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
       handleOrangeWaveChange(prevOrangeCount, getOrangeTabCount());
+      bumpDashboardVersion();
       updateIcon(tabId);
       // 탭이 현재 비활성이면(다른 탭 보고 있으면) 알림/알림음을 보낼 수 있음
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const isActiveTab = tabs.length > 0 && tabs[0].id === tabId;
-        if (!isActiveTab) safeActionCall(emitSingleCompletionAlert({ tabId, platform: nextPlatform, siteName: nextSiteName }));
-      });
+      const activeTabId = getActiveTabIdForWindow(sender.tab?.windowId);
+      const isActiveTab = Number.isFinite(activeTabId) && activeTabId === tabId;
+      if (!isActiveTab) safeActionCall(emitSingleCompletionAlert({ tabId, platform: nextPlatform, siteName: nextSiteName }));
       return;
     }
     if (prevStatus === 'GREEN' || prevStatus === 'WHITE') {
+      const meaningfulChanged = (prevState?.platform || '') !== nextPlatform
+        || (prevState?.siteName || '') !== nextSiteName
+        || (prevState?.windowId || null) !== (sender.tab?.windowId || null);
       tabStates[tabId] = {
         ...prevState,
         status: prevStatus,
         platform: nextPlatform,
         siteName: nextSiteName,
         windowId: sender.tab?.windowId,
-        lastUpdateAt: now,
+        lastSeenAt: now,
+        lastUpdateAt: meaningfulChanged
+          ? now
+          : (((now - (prevState?.lastUpdateAt || 0)) >= LAST_UPDATE_HEARTBEAT_THROTTLE_MS) ? now : (prevState?.lastUpdateAt || now)),
         steeringQueueCount: prevState?.steeringQueueCount || 0,
       };
+      if (meaningfulChanged) bumpDashboardVersion();
       updateIcon(tabId);
       return;
     }
   }
   if (message.action === 'steering_queue_update') {
     const prevState = tabStates[tabId] ? { ...tabStates[tabId] } : {};
+    const now = Date.now();
+    const nextCount = Math.max(0, Number(message.count) || 0);
+    const nextPlatform = message.platform || prevState.platform || '';
+    const nextSiteName = message.siteName || prevState.siteName || '';
+    const meaningfulChanged = !prevState?.status
+      || (prevState?.platform || '') !== nextPlatform
+      || (prevState?.siteName || '') !== nextSiteName
+      || (prevState?.windowId || null) !== (sender.tab?.windowId || null)
+      || Math.max(0, Number(prevState?.steeringQueueCount) || 0) !== nextCount;
     tabStates[tabId] = {
       ...prevState,
       status: prevState.status || 'WHITE',
-      platform: message.platform || prevState.platform || '',
-      siteName: message.siteName || prevState.siteName || '',
+      platform: nextPlatform,
+      siteName: nextSiteName,
       windowId: sender.tab?.windowId,
-      lastUpdateAt: Date.now(),
-      steeringQueueCount: Math.max(0, Number(message.count) || 0),
+      lastSeenAt: now,
+      lastUpdateAt: meaningfulChanged ? now : (prevState?.lastUpdateAt || now),
+      steeringQueueCount: nextCount,
     };
+    if (meaningfulChanged) bumpDashboardVersion();
     updateIcon(tabId);
     return;
   }
@@ -771,10 +1236,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const prev = tabStates[tabId]?.status;
     if (prev === 'GREEN') {
       tabStates[tabId].status = 'WHITE';
+      tabStates[tabId].lastSeenAt = Date.now();
       tabStates[tabId].lastUpdateAt = Date.now();
+      bumpDashboardVersion();
       updateIcon(tabId);
     }
   }
+});
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.action === 'get_dashboard_meta') {
+    sendResponse({
+      ok: true,
+      version: dashboardVersion,
+      itemsCount: dashboardMetaCache.itemsCount,
+      hasOrange: dashboardMetaCache.hasOrange,
+      hasGreen: dashboardMetaCache.hasGreen,
+    });
+    return;
+  }
+  if (message?.action !== 'get_dashboard') return;
+  ensureTabMetaCache(() => {
+    sendResponse({
+      ok: true,
+      version: dashboardVersion,
+      items: getDashboardItemsFromCache(),
+      snoozeUntil: clampInt(settings.notificationSnoozeUntil, 0, 0, Number.MAX_SAFE_INTEGER),
+      history: completionHistoryCache.slice(0, COMPLETION_HISTORY_LIMIT),
+      quietHoursActive: isQuietHoursActive(),
+      quietHoursEnabled: !!settings.quietHoursEnabled,
+      quietHoursStart: settings.quietHoursStart,
+      quietHoursEnd: settings.quietHoursEnd,
+      suppressionReason: getNotificationSuppressionReason(),
+    });
+  });
+  return true;
+});
+chrome.tabs.query({}, (tabs) => {
+  tabMetaCache = {};
+  for (const tab of (Array.isArray(tabs) ? tabs : [])) upsertTabMetaFromTab(tab);
+  tabCacheInitialized = true;
+});
+chrome.tabs.onCreated.addListener((tab) => {
+  upsertTabMetaFromTab(tab);
+  tabCacheInitialized = true;
+  bumpDashboardVersion();
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const prevMeta = tabMetaCache[tabId] || {};
+  upsertTabMetaFromTab({ ...prevMeta, ...(tab || {}), id: tabId, ...changeInfo });
+  if ('title' in changeInfo || 'url' in changeInfo || 'discarded' in changeInfo || 'status' in changeInfo) {
+    bumpDashboardVersion();
+  }
+});
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  for (const id of Object.keys(tabMetaCache)) {
+    if ((tabMetaCache[id]?.windowId || null) === windowId) {
+      tabMetaCache[id] = { ...(tabMetaCache[id] || {}), active: Number(id) === tabId };
+    }
+  }
+  bumpDashboardVersion();
 });
 // 알림 클릭 시 해당 탭으로 이동
 chrome.notifications.onClicked.addListener((notificationId) => {
@@ -802,10 +1322,15 @@ chrome.notifications.onClosed.addListener((notificationId) => {
 });
 // 탭 닫힘 정리
 chrome.tabs.onRemoved.addListener((tabId) => {
+  clearCustomTabTitleForTab(tabId);
+  delete tabMetaCache[tabId];
+  delete actionStateCache[tabId];
+  const hadTrackedState = !!tabStates[tabId];
   const wasOrange = tabStates[tabId]?.status === 'ORANGE';
   const prevOrangeCount = wasOrange ? getOrangeTabCount() : 0;
   delete tabStates[tabId];
   delete frameStates[tabId];
+  if (hadTrackedState) bumpDashboardVersion();
   if (wasOrange) handleOrangeWaveChange(prevOrangeCount, getOrangeTabCount(), { cancelWave: true });
 });
 function isMonitoredUrl(url) {
@@ -822,6 +1347,7 @@ function isMonitoredUrl(url) {
 function purgeDisabledTabs() {
   chrome.tabs.query({}, (tabs) => {
     let removedOrange = false;
+    let removedAny = false;
     let prevOrangeCount = getOrangeTabCount();
     for (const t of tabs) {
       if (!t?.id) continue;
@@ -831,16 +1357,19 @@ function purgeDisabledTabs() {
       if (isMonitoredUrl(url)) continue;
       // 더 이상 등록된 사이트가 아니면 상태 정리 + 아이콘 흰색으로
       if (tabStates[t.id]?.status === 'ORANGE') removedOrange = true;
+      removedAny = true;
       delete tabStates[t.id];
       delete frameStates[t.id];
       updateIcon(t.id);
     }
+    if (removedAny) bumpDashboardVersion();
     if (removedOrange) handleOrangeWaveChange(prevOrangeCount, getOrangeTabCount(), { cancelWave: true });
   });
 }
 async function kickAllTabs(reason) {
   getSiteConfig(async () => {
     const tabs = await pTabsQuery({});
+    let seeded = false;
     for (const t of tabs) {
       if (!t || typeof t.id !== 'number') continue;
       const url = t.url || '';
@@ -853,14 +1382,17 @@ async function kickAllTabs(reason) {
           platform: site.key,
           siteName: site.name,
           windowId: t.windowId,
+          lastSeenAt: Date.now(),
           lastUpdateAt: Date.now(),
         };
+        seeded = true;
         updateIcon(t.id);
       }
       // content가 없으면 주입해서 title 뱃지도 복구
       safeActionCall(ensureContentScripts(t));
       safeActionCall(pTabsSendMessage(t.id, { action: 'force_check', reason: reason || 'kick' }));
     }
+    if (seeded) bumpDashboardVersion();
   });
 }
 try {
