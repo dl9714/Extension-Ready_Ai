@@ -1,11 +1,11 @@
 # Ready_Ai
 
-Ready_Ai is packaged from the `sources/` directory.
+Ready_Ai is packaged from the repository root.
 
 For Chrome's "Load unpacked" flow, select:
 
 ```text
-Ready_Ai/sources
+Ready_Ai
 ```
 
-There is intentionally no repository-root `manifest.json`. Keeping only `sources/manifest.json` avoids loading the wrong extension root and keeps paths consistent with the packaged extension.
+The repository root is the extension root. Keep `manifest.json`, `src/`, `assets/`, and `docs/` at the top level so Chrome loads a single, unambiguous extension package.
