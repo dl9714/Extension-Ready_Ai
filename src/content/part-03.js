@@ -62,7 +62,7 @@ function saveCustomTabTitleFromInput() {
   const finalizeSuccess = (savedTitle = nextTitle) => {
     const confirmedTitle = normalizeCustomTabTitle(savedTitle || nextTitle) || nextTitle;
     setCustomTabTitleValue(confirmedTitle);
-    setSteeringStatus(`탭 이름 고정: ${confirmedTitle}`);
+    setSteeringStatus(`크롬 탭 이름변경: ${confirmedTitle}`);
     updateSteeringUi();
   };
   const finalizeFailure = (message) => {
@@ -103,7 +103,7 @@ function clearCustomTabTitleOverride() {
   updateSteeringUi();
   const finalizeSuccess = () => {
     setCustomTabTitleValue('', { sync: true });
-    setSteeringStatus('탭 이름 고정을 해제했습니다.');
+    setSteeringStatus('크롬 탭 이름변경을 해제했습니다.');
     updateSteeringUi();
   };
   const verifyAfterFailure = (fallbackMessage) => {
@@ -112,23 +112,23 @@ function clearCustomTabTitleOverride() {
         finalizeSuccess();
         return;
       }
-      setSteeringStatus(fallbackMessage || (typeof info === 'string' ? info : '탭 이름 고정 해제에 실패했습니다.'), true);
+      setSteeringStatus(fallbackMessage || (typeof info === 'string' ? info : '크롬 탭 이름변경 해제에 실패했습니다.'), true);
     });
   };
   try {
     chrome.runtime.sendMessage({ action: 'clear_custom_tab_title' }, (resp) => {
       if (chrome.runtime.lastError) {
-        verifyAfterFailure(chrome.runtime.lastError.message || '탭 이름 고정 해제에 실패했습니다.');
+        verifyAfterFailure(chrome.runtime.lastError.message || '크롬 탭 이름변경 해제에 실패했습니다.');
         return;
       }
       if (resp?.ok === false) {
-        verifyAfterFailure(resp?.message || '탭 이름 고정 해제에 실패했습니다.');
+        verifyAfterFailure(resp?.message || '크롬 탭 이름변경 해제에 실패했습니다.');
         return;
       }
       finalizeSuccess();
     });
   } catch (_) {
-    verifyAfterFailure('탭 이름 고정 해제에 실패했습니다.');
+    verifyAfterFailure('크롬 탭 이름변경 해제에 실패했습니다.');
   }
 }
 function clearSteeringAutoSendTimer() {

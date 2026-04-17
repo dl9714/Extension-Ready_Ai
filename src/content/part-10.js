@@ -24,15 +24,14 @@ var STEERING_UI_MARKUP_TEMPLATE = `
         </div>
         <div class="title-edit-card">
           <div class="title-edit-head">
-            <span class="title-edit-label">이 탭 이름 고정</span>
-            <span class="title-white-badge" title="답변 완료 상태는 흰색 배지로 표시됩니다.">⚪ 완료 배지</span>
+            <span class="title-edit-label"><span class="title-label-badge" aria-hidden="true">⚪</span><span>크롬 탭 이름변경</span></span>
           </div>
           <div class="title-edit">
-            <input class="title-input" id="ready-ai-steering-tab-title-input" type="text" maxlength="80" placeholder="고정할 탭 이름 입력" />
-            <button class="title-btn" type="button" id="ready-ai-steering-tab-title-save">이름 고정</button>
+            <input class="title-input" id="ready-ai-steering-tab-title-input" type="text" maxlength="80" placeholder="변경할 크롬 탭 이름 입력" />
+            <button class="title-btn" type="button" id="ready-ai-steering-tab-title-save">이름 변경</button>
             <button class="title-btn subtle" type="button" id="ready-ai-steering-tab-title-clear">해제</button>
           </div>
-          <div class="title-meta" id="ready-ai-steering-tab-title-meta">탭 이름 자동</div>
+          <div class="title-meta" id="ready-ai-steering-tab-title-meta">크롬 탭 이름 자동</div>
         </div>
         <div class="advanced-card" id="ready-ai-steering-advanced-card">
           <div class="advanced-toggle-row">
@@ -223,7 +222,7 @@ function bindSteeringUiEvents() {
       const rawPreset = String(btn.getAttribute('data-preset-title') || '').trim();
       const preset = rawPreset === '최근' ? normalizeCustomTabTitle(lastCustomTabTitle || customTabTitle || '') : rawPreset;
       if (!preset) {
-        setSteeringStatus('최근 고정 이름이 없습니다.', true);
+        setSteeringStatus('최근 변경 이름이 없습니다.', true);
         return;
       }
       if (steeringRefs.tabTitleInput) steeringRefs.tabTitleInput.value = preset;

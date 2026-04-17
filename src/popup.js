@@ -896,7 +896,7 @@ async function renderTitleManager(cfg, options = {}) {
     if (activeTab?.id) {
       const host = activeItem?.host || getHostLabel(activeTab?.url || '');
       const fixed = normalizeCustomTabTitleValue(activeItem?.customTabTitle || '');
-      activeSummary.textContent = `${activeItem?.title || activeTab.title || '현재 탭'} · ${host || 'URL 없음'}${fixed ? ` · 고정됨: ${fixed}` : ' · 자동 제목'}`;
+      activeSummary.textContent = `${activeItem?.title || activeTab.title || '현재 탭'} · ${host || 'URL 없음'}${fixed ? ` · 변경됨: ${fixed}` : ' · 자동 제목'}`;
     } else {
       activeSummary.textContent = '현재 탭을 찾지 못했습니다.';
     }
@@ -948,7 +948,7 @@ async function renderTitleManager(cfg, options = {}) {
     const sub = document.createElement('div');
     sub.className = 'title-manager-sub';
     const customText = normalizeCustomTabTitleValue(item.customTabTitle || '');
-    sub.textContent = `${statusLabel(item.status)} · ${item.siteName || item.platform || '미확인'} · ${item.host || getHostLabel(item.url) || 'URL 없음'}${customText ? ` · 고정: ${customText}` : ' · 자동 제목'}`;
+    sub.textContent = `${statusLabel(item.status)} · ${item.siteName || item.platform || '미확인'} · ${item.host || getHostLabel(item.url) || 'URL 없음'}${customText ? ` · 변경: ${customText}` : ' · 자동 제목'}`;
     left.appendChild(title);
     left.appendChild(sub);
     top.appendChild(left);
@@ -956,7 +956,7 @@ async function renderTitleManager(cfg, options = {}) {
     if (customText) {
       const pin = document.createElement('span');
       pin.className = 'title-badge-pin';
-      pin.textContent = '고정';
+      pin.textContent = '변경';
       right.appendChild(pin);
     } else {
       const state = document.createElement('span');
@@ -972,7 +972,7 @@ async function renderTitleManager(cfg, options = {}) {
     input.type = 'text';
     input.maxLength = CUSTOM_TAB_TITLE_MAX_LENGTH;
     input.value = customText;
-    input.placeholder = '이 탭 이름 고정';
+    input.placeholder = '크롬 탭 이름변경';
     const saveBtn = document.createElement('button');
     saveBtn.className = 'btn primary';
     saveBtn.type = 'button';
@@ -993,7 +993,7 @@ async function renderTitleManager(cfg, options = {}) {
     clearBtn.addEventListener('click', async () => {
       const ok = await clearCustomTitleForTabId(item.tabId);
       if (ok) {
-        setHint('탭 이름 고정 해제됨');
+        setHint('크롬 탭 이름변경 해제됨');
         lastTitleManagerListSignature = '';
         await refreshRuntimeDashboard(cfg, true, { force: true });
         renderTitleManager(cfg);
@@ -1488,7 +1488,7 @@ function renderDashboardData(data, cfg) {
           const sub = document.createElement('div');
           sub.className = 'dash-sub';
           const queueLabel = item.steeringQueueCount ? ` · 대기열 ${item.steeringQueueCount}` : '';
-          const pinLabel = item.hasCustomTabTitle ? ` · 고정: ${item.customTabTitle}` : '';
+          const pinLabel = item.hasCustomTabTitle ? ` · 변경: ${item.customTabTitle}` : '';
           sub.setAttribute('data-role', 'relative-time');
           sub.setAttribute('data-mode', 'dashboard');
           sub.setAttribute('data-ts', String(item.lastUpdateAt || 0));
@@ -1542,7 +1542,7 @@ function renderDashboardData(data, cfg) {
           const pinBtn = document.createElement('button');
           pinBtn.className = 'btn';
           pinBtn.type = 'button';
-          pinBtn.textContent = item.hasCustomTabTitle ? '이름 해제' : '기본 이름 고정';
+          pinBtn.textContent = item.hasCustomTabTitle ? '이름 해제' : '기본 이름 변경';
           pinBtn.addEventListener('click', async () => {
             if (item.hasCustomTabTitle) {
               const ok = await clearCustomTitleForTabId(item.tabId);
