@@ -153,7 +153,7 @@ async function waitForSteeringAttachmentUploadReady(composer, options = {}) {
 async function sendSteeringPromptText(text, options = {}) {
   const composer = getActiveComposer();
   if (!composer) {
-    return { ok: false, sent: false, message: '현재 페이지에서 입력창을 찾지 못했습니다.' };
+    return { ok: false, sent: false, retryable: true, message: '입력창이 아직 준비되지 않았습니다.' };
   }
   const images = Array.isArray(options.images) ? options.images.filter((item) => item?.file) : [];
   if (images.length) {
@@ -228,10 +228,10 @@ async function processSteeringQueue(options = {}) {
       if (result.retryable) {
         current.retryCount = Math.max(0, Number(current.retryCount) || 0) + 1;
         if (current.retryCount <= 6) {
-          setSteeringStatus(`이미지 업로드 대기 중 · 재시도 ${current.retryCount}`);
+          setSteeringStatus(`${result.message || '전송 준비 대기 중'} · 재시도 ${current.retryCount}`);
           scheduleSteeringQueueProcessing(Math.min(4200, 900 + current.retryCount * 550));
         } else {
-          setSteeringStatus(result.message || '이미지 업로드가 오래 걸리고 있습니다. 업로드가 끝난 뒤 다시 전송해 주세요.', true);
+          setSteeringStatus(result.message || '전송 준비가 오래 걸리고 있습니다. 페이지가 열린 뒤 다시 전송해 주세요.', true);
         }
       } else {
         setSteeringStatus(result.message || '전송하지 못했습니다.', true);
@@ -257,7 +257,67 @@ async function processSteeringQueue(options = {}) {
     updateSteeringUi();
   }
 }
+function submitSteeringInputToNewChats() {
+  const refs = ensureSteeringUi();
+  const text = String(refs?.input?.value || '').trim();
+  const imageCount = getSteeringDraftAttachmentCount();
+  if (!steeringAdvancedEnabled) {
+    setSteeringStatus('고급설정을 먼저 켜주세요.', true);
+    return false;
+  }
+  if (getSiteKey() !== 'chatgpt') {
+    setSteeringStatus('새 채팅 탭 전송은 ChatGPT에서만 지원합니다.', true);
+    return false;
+  }
+  if (!text) {
+    setSteeringStatus('새 채팅으로 보낼 문구를 입력해주세요.', true);
+    try { refs?.input?.focus(); } catch (_) {}
+    return false;
+  }
+  if (imageCount > 0) {
+    setSteeringStatus('새 채팅 탭 전송은 텍스트만 지원합니다. 이미지는 현재 대화로 전송해 주세요.', true);
+    return false;
+  }
+  const count = normalizeSteeringNewChatTabCount(refs?.newChatCount?.value || steeringNewChatTabCount);
+  steeringNewChatTabCount = count;
+  try {
+    chrome.storage.local.set({ [STEERING_STORAGE_KEYS.NEW_CHAT_TAB_COUNT]: count });
+  } catch (_) {}
+  setSteeringStatus(`새 ChatGPT 채팅 ${count}개를 여는 중...`);
+  try {
+    chrome.runtime.sendMessage({
+      action: 'open_chatgpt_new_chat_tabs',
+      text,
+      count,
+      sourceUrl: location.href,
+    }, (resp) => {
+      if (chrome.runtime.lastError) {
+        setSteeringStatus(chrome.runtime.lastError.message || '새 채팅 탭을 만들지 못했습니다.', true);
+        updateSteeringUi();
+        return;
+      }
+      if (!resp?.ok) {
+        setSteeringStatus(resp?.message || '새 채팅 탭 전송에 실패했습니다.', true);
+        updateSteeringUi();
+        return;
+      }
+      setSteeringDraftText('');
+      try { if (refs?.input) refs.input.value = ''; } catch (_) {}
+      setSteeringStatus(`새 ChatGPT 채팅 ${resp.sentCount || count}개에 전송 요청 완료`);
+      updateSteeringUi();
+    });
+  } catch (_) {
+    setSteeringStatus('새 채팅 탭 전송 요청에 실패했습니다.', true);
+    updateSteeringUi();
+    return false;
+  }
+  return true;
+}
 function submitSteeringInput() {
+  if (steeringAdvancedEnabled) {
+    submitSteeringInputToNewChats();
+    return;
+  }
   const refs = ensureSteeringUi();
   const text = String(refs?.input?.value || '').trim();
   const images = cloneSteeringImagesForQueue();
