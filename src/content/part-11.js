@@ -46,7 +46,7 @@ function applySteeringUiNow() {
   }
   refs.launcherTitle.textContent = getSteeringLauncherText();
   refs.launcherSub.textContent = getSteeringLauncherSubText();
-  if (refs.tabTitleMeta) refs.tabTitleMeta.textContent = hasCustomTabTitle() ? `탭 이름 고정: ${normalizeCustomTabTitle(customTabTitle)} · 원래 제목: ${normalizeCustomTabTitle(nativePageTitle || activeSite?.name || 'AI')}` : `탭 이름 자동 · 원래 제목: ${normalizeCustomTabTitle(nativePageTitle || activeSite?.name || 'AI')}`;
+  if (refs.tabTitleMeta) refs.tabTitleMeta.textContent = hasCustomTabTitle() ? `크롬 탭 이름변경: ${normalizeCustomTabTitle(customTabTitle)} · 원래 제목: ${normalizeCustomTabTitle(nativePageTitle || activeSite?.name || 'AI')}` : `크롬 탭 이름 자동 · 원래 제목: ${normalizeCustomTabTitle(nativePageTitle || activeSite?.name || 'AI')}`;
   const titleInputActive = steeringRoot?.activeElement === refs.tabTitleInput;
   if (refs.tabTitleInput && (!titleInputActive || !String(refs.tabTitleInput.value || '').trim())) {
     refs.tabTitleInput.value = normalizeCustomTabTitle(customTabTitle);

@@ -53,11 +53,14 @@ var STEERING_UI_STYLE_TEMPLATE_B = `
       .title-edit-head {
         display: flex;
         align-items: center;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 8px;
         min-width: 0;
       }
       .title-edit-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         min-width: 0;
         color: #e5e7eb;
         font-size: 11px;
@@ -67,23 +70,24 @@ var STEERING_UI_STYLE_TEMPLATE_B = `
       .dock[data-theme="light"] .title-edit-label {
         color: #0f172a;
       }
-      .title-white-badge {
+      .title-label-badge {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 22px;
-        padding: 2px 8px;
+        width: 18px;
+        height: 18px;
         border: 1px solid rgba(148, 163, 184, 0.36);
         border-radius: 999px;
         background: #fff;
         color: #0f172a;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 800;
         line-height: 1.2;
         white-space: nowrap;
+        flex: 0 0 auto;
         box-shadow: 0 8px 18px rgba(2, 6, 23, 0.16);
       }
-      .dock[data-theme="light"] .title-white-badge {
+      .dock[data-theme="light"] .title-label-badge {
         border-color: rgba(15, 23, 42, 0.12);
         box-shadow: 0 8px 18px rgba(15, 23, 42, 0.1);
       }
