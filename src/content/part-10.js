@@ -5,7 +5,7 @@ var STEERING_UI_MARKUP_TEMPLATE = `
           <span class="dot"></span>
           <span class="launcher-text">
             <span class="launcher-title-row">
-              <strong id="ready-ai-steering-launcher-title">스티어링 열기</strong>
+              <strong id="ready-ai-steering-launcher-title">후속 지시 열기</strong>
               <span class="launcher-count" id="ready-ai-steering-launcher-count">대기 : 0</span>
             </span>
             <small id="ready-ai-steering-launcher-sub">항상 열어둘 수 있는 후속 지시 패널</small>

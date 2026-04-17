@@ -937,11 +937,11 @@ function updateIcon(tabId) {
   const state = tabState.status || 'WHITE';
   const steeringQueueCount = Math.max(0, Number(tabState.steeringQueueCount) || 0);
   // 아이콘은 기존 리소스를 재사용(뱃지 색으로 구분이 핵심)
-  let iconPath = 'assets/bell_profile.png';
+  let iconPath = 'assets/bell_unread.png';
   const computedBadgeText = steeringQueueCount > 0 ? (steeringQueueCount > 99 ? '99+' : String(steeringQueueCount)) : '1';
   let badgeText = settings.badgeCountEnabled === false ? ' ' : computedBadgeText;
-  let badgeBg = '#FFFFFF';
-  let badgeFg = steeringQueueCount > 0 ? '#000000' : '#FFFFFF';
+  let badgeBg = '#7CFC00';
+  let badgeFg = steeringQueueCount > 0 ? '#000000' : '#7CFC00';
   switch (state) {
     case 'ORANGE':
       iconPath = 'assets/bell_pending.png';
@@ -949,15 +949,15 @@ function updateIcon(tabId) {
       badgeFg = steeringQueueCount > 0 ? '#FFFFFF' : '#FFA500';
       break;
     case 'GREEN':
-      iconPath = 'assets/bell_unread.png';
-      badgeBg = '#7CFC00'; // 연두
-      badgeFg = steeringQueueCount > 0 ? '#000000' : '#7CFC00';
-      break;
-    case 'WHITE':
-    default:
       iconPath = 'assets/bell_profile.png';
       badgeBg = '#FFFFFF';
       badgeFg = steeringQueueCount > 0 ? '#000000' : '#FFFFFF';
+      break;
+    case 'WHITE':
+    default:
+      iconPath = 'assets/bell_unread.png';
+      badgeBg = '#7CFC00'; // 연두
+      badgeFg = steeringQueueCount > 0 ? '#000000' : '#7CFC00';
       break;
   }
   const signature = JSON.stringify({
@@ -1148,8 +1148,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     // 2) 어떤 프레임도 생성중이 아니면:
-    //    - ORANGE -> GREEN (완료)
-    //    - (첫 보고) -> WHITE (아무 질문 없음)
+    //    - ORANGE -> GREEN (완료, 표시는 흰색)
+    //    - (첫 보고) -> WHITE (아무 질문 없음, 표시는 연두색)
     //    - GREEN/WHITE 유지
     if (!prevStatus) {
       tabStates[tabId] = {
@@ -1231,7 +1231,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     updateIcon(tabId);
     return;
   }
-  // content 쪽 사용자 상호작용(클릭/스크롤)로 🟢 -> ⚪
+  // content 쪽 사용자 상호작용(클릭/스크롤)로 ⚪ -> 🟢
   if (message.action === 'user_activity') {
     const prev = tabStates[tabId]?.status;
     if (prev === 'GREEN') {
@@ -1314,8 +1314,8 @@ chrome.notifications.onClicked.addListener((notificationId) => {
       chrome.windows.update(tab.windowId, { focused: true });
     }
   });
-  // 요구사항: 탭을 여는 것만으로는 🟢를 없애지 않는다.
-  // (클릭/스크롤로만 ⚪로 전환)
+  // 요구사항: 탭을 여는 것만으로는 ⚪를 없애지 않는다.
+  // (클릭/스크롤로만 🟢로 전환)
 });
 chrome.notifications.onClosed.addListener((notificationId) => {
   delete notificationTargets[notificationId];
@@ -1355,7 +1355,7 @@ function purgeDisabledTabs() {
       const url = t.url || '';
       if (!url) continue;
       if (isMonitoredUrl(url)) continue;
-      // 더 이상 등록된 사이트가 아니면 상태 정리 + 아이콘 흰색으로
+      // 더 이상 등록된 사이트가 아니면 상태 정리 + 아이콘 연두색으로
       if (tabStates[t.id]?.status === 'ORANGE') removedOrange = true;
       removedAny = true;
       delete tabStates[t.id];
@@ -1375,7 +1375,7 @@ async function kickAllTabs(reason) {
       const url = t.url || '';
       const site = resolveSiteForUrl(url);
       if (!site) continue; // 등록/활성된 사이트만
-      // 상태가 비어 있으면 최소 WHITE라도 찍어서 "완전 공백"을 방지
+      // 상태가 비어 있으면 최소 WHITE(표시는 연두색)라도 찍어서 "완전 공백"을 방지
       if (!tabStates[t.id]) {
         tabStates[t.id] = {
           status: 'WHITE',

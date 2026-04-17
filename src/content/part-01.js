@@ -7,7 +7,7 @@ var isGenerating = false;
 var checkInterval = null;
 var completionStatus = 'idle'; // 'idle' | 'completed'
 // 최초 1회는 무조건 background로 상태를 보내서
-// "아무 질문 없음" 상태(흰색 뱃지)도 탭에 즉시 반영되게 한다.
+// "아무 질문 없음" 상태(연두색 뱃지)도 탭에 즉시 반영되게 한다.
 var hasSentInitialState = false;
 // iframe(특히 AI Studio) 대응
 // - UI가 cross-origin iframe 안에 들어가면 top frame은 "생성중" 요소를 못 본다.
@@ -18,9 +18,9 @@ var IS_TOP_FRAME = (() => {
 })();
 // 탭 타이틀 뱃지(이모지)
 var TITLE_BADGE = {
-  WHITE: '⚪',  // 대기/읽음/아무 질문 없음
+  WHITE: '🟢',  // 대기/읽음/아무 질문 없음
   ORANGE: '🟠', // 생성중
-  GREEN: '🟢',  // 완료(아직 클릭/스크롤로 확인 전)
+  GREEN: '⚪',  // 완료(아직 클릭/스크롤로 확인 전)
 };
 var TITLE_BADGE_PREFIX_RE = /^(?:[⚪🟠🟢](?:\[?\d+\+?\]?|\s*(?:\d+\+?)?)?\s*)+/;
 function getTitleBadgeCountGlyph() {

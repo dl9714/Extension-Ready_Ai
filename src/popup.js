@@ -654,8 +654,8 @@ function formatAgo(ts) {
 }
 function statusClass(status) {
   if (status === 'ORANGE') return 'orange';
-  if (status === 'GREEN') return 'green';
-  return 'white';
+  if (status === 'GREEN') return 'white';
+  return 'green';
 }
 function statusLabel(status) {
   if (status === 'ORANGE') return '진행중';
@@ -1110,7 +1110,7 @@ function refreshSummary(cfg) {
   const advancedSummary = $('advanced-settings-summary');
   if (advancedSummary) {
     const parts = [];
-    parts.push(cfg.steeringLauncherVisible ? '스티어링 버튼 표시' : '스티어링 버튼 숨김');
+    parts.push(cfg.steeringLauncherVisible ? '후속 지시 버튼 표시' : '후속 지시 버튼 숨김');
     parts.push(cfg.badgeEnabled ? (cfg.badgeCountEnabled ? '배지 숫자 켜짐' : '배지 숫자 꺼짐') : '배지 꺼짐');
     parts.push(cfg.titleBadgeEnabled ? (cfg.titleBadgeCountEnabled ? '탭 제목 숫자 켜짐' : '탭 제목 숫자 꺼짐') : '탭 제목 표시 꺼짐');
     parts.push(cfg.completionHistoryEnabled ? '완료 이력 저장' : '완료 이력 저장 안 함');

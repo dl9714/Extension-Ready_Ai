@@ -190,7 +190,7 @@ function clearSteeringCompletionOffer() {
   }
 }
 function getSteeringLauncherText() {
-  return steeringPanelOpen ? '스티어링 닫기' : '스티어링 열기';
+  return steeringPanelOpen ? '후속 지시 닫기' : '후속 지시 열기';
 }
 function getSteeringLauncherSubText() {
   return '항상 열어둘 수 있는 후속 지시 패널';

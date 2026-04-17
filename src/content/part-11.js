@@ -251,9 +251,9 @@ function checkStatus() {
   if (isGenerating !== currentlyGenerating) {
     isGenerating = currentlyGenerating;
     // 요구사항:
-    // - 생성 시작: ⚪ -> 🟠
-    // - 생성 완료: 🟠 -> 🟢 (탭이 포커스인지 여부와 무관하게 무조건 🟢)
-    // - 🟢 상태는 "클릭/스크롤"로만 ⚪로 돌아간다.
+    // - 생성 시작: 🟢 -> 🟠
+    // - 생성 완료: 🟠 -> ⚪ (탭이 포커스인지 여부와 무관하게 무조건 ⚪)
+    // - ⚪ 상태는 "클릭/스크롤"로만 🟢로 돌아간다.
     if (isGenerating) {
       completionStatus = 'idle';
       steeringLastCompletionAt = 0;
@@ -276,7 +276,7 @@ function checkStatus() {
     shouldSend = true;
     ensurePolling(true);
   } else if (!hasSentInitialState) {
-    // 초기 1회는 무조건 상태 전송(흰색 뱃지 표시용)
+    // 초기 1회는 무조건 상태 전송(연두색 뱃지 표시용)
     shouldSend = true;
   } else {
     // frame TTL이 남지 않도록 주기적으로 status를 보내준다(오탐 방지: 5초에 1번)
@@ -315,4 +315,4 @@ function markTypingAcknowledged(event) {
   if (!isEditableInteractionTarget(event?.target)) return;
   acknowledgeCompletion();
 }
-// 사용자 상호작용(클릭/스크롤) 시 🟢 -> ⚪ 전환 (요구사항)
+// 사용자 상호작용(클릭/스크롤) 시 ⚪ -> 🟢 전환 (요구사항)
