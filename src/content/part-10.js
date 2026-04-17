@@ -24,7 +24,7 @@ var STEERING_UI_MARKUP_TEMPLATE = `
         </div>
         <div class="title-edit-card">
           <div class="title-edit-head">
-            <span class="title-edit-label"><span class="title-label-badge" aria-hidden="true">⚪</span><span>크롬 탭 이름변경</span></span>
+            <span class="title-edit-label"><span class="title-label-badge" aria-hidden="true">🟢</span><span>크롬 탭 이름변경</span></span>
           </div>
           <div class="title-edit">
             <input class="title-input" id="ready-ai-steering-tab-title-input" type="text" maxlength="80" placeholder="변경할 크롬 탭 이름 입력" />
