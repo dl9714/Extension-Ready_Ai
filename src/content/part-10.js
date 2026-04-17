@@ -22,6 +22,18 @@ var STEERING_UI_MARKUP_TEMPLATE = `
           </div>
           <button class="icon-btn" type="button" id="ready-ai-steering-close" aria-label="접기">×</button>
         </div>
+        <div class="title-edit-card">
+          <div class="title-edit-head">
+            <span class="title-edit-label">이 탭 이름 고정</span>
+            <span class="title-white-badge" title="답변 완료 상태는 흰색 배지로 표시됩니다.">⚪ 완료 배지</span>
+          </div>
+          <div class="title-edit">
+            <input class="title-input" id="ready-ai-steering-tab-title-input" type="text" maxlength="80" placeholder="고정할 탭 이름 입력" />
+            <button class="title-btn" type="button" id="ready-ai-steering-tab-title-save">이름 고정</button>
+            <button class="title-btn subtle" type="button" id="ready-ai-steering-tab-title-clear">해제</button>
+          </div>
+          <div class="title-meta" id="ready-ai-steering-tab-title-meta">탭 이름 자동</div>
+        </div>
         <textarea class="input" id="ready-ai-steering-input" placeholder="후속 지시 입력 · 이미지 드래그 가능"></textarea>
         <div class="drop-shield" id="ready-ai-steering-drop-shield" hidden>여기에 놓으면 이미지 첨부</div>
         <div class="template-wrap" id="ready-ai-steering-template-wrap">
@@ -42,12 +54,6 @@ var STEERING_UI_MARKUP_TEMPLATE = `
           <input class="file-input" id="ready-ai-steering-image-file" type="file" accept="image/*" multiple />
           <div class="attachment-list" id="ready-ai-steering-attachment-list"></div>
         </div>
-        <div class="title-edit">
-          <input class="title-input" id="ready-ai-steering-tab-title-input" type="text" maxlength="80" placeholder="이 탭 이름 고정" />
-          <button class="title-btn" type="button" id="ready-ai-steering-tab-title-save">이름 고정</button>
-          <button class="title-btn subtle" type="button" id="ready-ai-steering-tab-title-clear">해제</button>
-        </div>
-        <div class="title-meta" id="ready-ai-steering-tab-title-meta">탭 이름 자동</div>
         <div class="actions">
           <button class="btn" type="button" id="ready-ai-steering-primary">Enter</button>
           <button class="btn secondary" type="button" id="ready-ai-steering-send-now">지금전송</button>
