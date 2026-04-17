@@ -40,12 +40,59 @@ var STEERING_UI_STYLE_TEMPLATE_B = `
       .queue-action.danger {
         color: #fca5a5;
       }
+      .title-edit-card {
+        margin-top: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 14px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .dock[data-theme="light"] .title-edit-card {
+        background: rgba(248, 250, 252, 0.95);
+      }
+      .title-edit-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-width: 0;
+      }
+      .title-edit-label {
+        min-width: 0;
+        color: #e5e7eb;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.25;
+      }
+      .dock[data-theme="light"] .title-edit-label {
+        color: #0f172a;
+      }
+      .title-white-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 22px;
+        padding: 2px 8px;
+        border: 1px solid rgba(148, 163, 184, 0.36);
+        border-radius: 999px;
+        background: #fff;
+        color: #0f172a;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 1.2;
+        white-space: nowrap;
+        box-shadow: 0 8px 18px rgba(2, 6, 23, 0.16);
+      }
+      .dock[data-theme="light"] .title-white-badge {
+        border-color: rgba(15, 23, 42, 0.12);
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.1);
+      }
       .title-edit {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto auto;
         gap: 6px;
         align-items: center;
-        margin-top: 10px;
+        margin-top: 8px;
       }
       .title-input {
         min-width: 0;
