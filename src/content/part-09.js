@@ -164,6 +164,149 @@ var STEERING_UI_STYLE_TEMPLATE_B = `
       .dock[data-theme="light"] .title-meta {
         color: #64748b;
       }
+      .card[data-advanced="true"] {
+        width: min(430px, calc(100vw - 28px));
+        max-height: min(760px, calc(100vh - 32px));
+        overflow-y: auto;
+        padding-bottom: 16px;
+      }
+      .card[data-advanced="true"] .input {
+        min-height: 132px;
+      }
+      .advanced-card {
+        margin-top: 10px;
+        border: 1px solid rgba(99, 102, 241, 0.2);
+        border-radius: 14px;
+        padding: 10px;
+        background: rgba(99, 102, 241, 0.08);
+      }
+      .dock[data-theme="light"] .advanced-card {
+        background: rgba(99, 102, 241, 0.06);
+      }
+      .advanced-toggle-row,
+      .advanced-field-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .advanced-toggle-row {
+        justify-content: space-between;
+      }
+      .advanced-copy {
+        min-width: 0;
+      }
+      .advanced-title {
+        color: #eef2ff;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.3;
+      }
+      .dock[data-theme="light"] .advanced-title {
+        color: #312e81;
+      }
+      .advanced-sub,
+      .advanced-hint {
+        color: #a5b4fc;
+        font-size: 10px;
+        line-height: 1.4;
+      }
+      .dock[data-theme="light"] .advanced-sub,
+      .dock[data-theme="light"] .advanced-hint {
+        color: #64748b;
+      }
+      .advanced-switch {
+        position: relative;
+        display: inline-flex;
+        width: 42px;
+        height: 24px;
+        flex: 0 0 auto;
+        cursor: pointer;
+      }
+      .advanced-switch input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .advanced-switch span {
+        width: 100%;
+        height: 100%;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.28);
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        transition: background 0.16s ease, border-color 0.16s ease;
+      }
+      .advanced-switch span::after {
+        content: '';
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: #f8fafc;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25);
+        transition: transform 0.16s ease;
+      }
+      .advanced-switch input:checked + span {
+        background: rgba(99, 102, 241, 0.82);
+        border-color: rgba(129, 140, 248, 0.76);
+      }
+      .advanced-switch input:checked + span::after {
+        transform: translateX(18px);
+      }
+      .advanced-body {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .advanced-card.enabled .advanced-body {
+        display: flex;
+      }
+      .advanced-field-row label {
+        color: #c7d2fe;
+        font-size: 10px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .dock[data-theme="light"] .advanced-field-row label {
+        color: #4338ca;
+      }
+      .advanced-field-row input {
+        width: 56px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 10px;
+        background: rgba(2, 6, 23, 0.32);
+        color: #f8fafc;
+        padding: 7px 8px;
+        font-size: 11px;
+        font-weight: 800;
+        outline: none;
+      }
+      .dock[data-theme="light"] .advanced-field-row input {
+        background: rgba(248, 250, 252, 0.96);
+        color: #0f172a;
+      }
+      .advanced-btn {
+        flex: 1 1 auto;
+        border: 1px solid rgba(129, 140, 248, 0.36);
+        border-radius: 10px;
+        background: linear-gradient(180deg, rgba(129, 140, 248, 0.32), rgba(99, 102, 241, 0.16));
+        color: #eef2ff;
+        padding: 8px 10px;
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .advanced-btn[disabled] {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .dock[data-theme="light"] .advanced-btn {
+        background: linear-gradient(180deg, rgba(99, 102, 241, 0.16), rgba(99, 102, 241, 0.06));
+        color: #312e81;
+      }
 .template-wrap {
   display: none;
   flex-direction: column;

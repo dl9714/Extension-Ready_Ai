@@ -91,6 +91,9 @@ function volumeToPercent(volume) {
 function percentToVolume(percent) {
   return clampNumber(percent / 100, 0.8, 0, 1);
 }
+function normalizeSteeringNewChatTabCount(value) {
+  return clampInt(value, 3, 1, 8);
+}
 function normalizeClockTime(value, fallback = '23:00') {
   const raw = String(value || '').trim();
   const m = raw.match(/^(\d{1,2}):(\d{1,2})$/);
@@ -324,6 +327,8 @@ function buildConfigStoragePayload(cfg) {
     steeringAutoFocusInput: !!cfg.steeringAutoFocusInput,
     steeringCloseAfterSend: !!cfg.steeringCloseAfterSend,
     steeringQueueCountVisible: !!cfg.steeringQueueCountVisible,
+    steeringAdvancedEnabled: !!cfg.steeringAdvancedEnabled,
+    steeringNewChatTabCount: normalizeSteeringNewChatTabCount(cfg.steeringNewChatTabCount),
     steeringTemplates: normalizeTemplateList(cfg.steeringTemplates),
     steeringRecentDraft: String(cfg.steeringRecentDraft || ''),
     quietHoursEnabled: !!cfg.quietHoursEnabled,
@@ -406,6 +411,8 @@ function loadConfig(cb) {
     'steeringAutoFocusInput',
     'steeringCloseAfterSend',
     'steeringQueueCountVisible',
+    'steeringAdvancedEnabled',
+    'steeringNewChatTabCount',
     enabledKey,
     customKey,
     'geminiProbeEnabled',
@@ -470,6 +477,8 @@ function loadConfig(cb) {
       steeringAutoFocusInput: (typeof res.steeringAutoFocusInput === 'boolean') ? res.steeringAutoFocusInput : true,
       steeringCloseAfterSend: (typeof res.steeringCloseAfterSend === 'boolean') ? res.steeringCloseAfterSend : false,
       steeringQueueCountVisible: (typeof res.steeringQueueCountVisible === 'boolean') ? res.steeringQueueCountVisible : true,
+      steeringAdvancedEnabled: (typeof res.steeringAdvancedEnabled === 'boolean') ? res.steeringAdvancedEnabled : false,
+      steeringNewChatTabCount: normalizeSteeringNewChatTabCount(res.steeringNewChatTabCount),
       steeringTemplates: normalizeTemplateList(res.steeringTemplates),
       steeringRecentDraft: String(res.steeringRecentDraft || ''),
       quietHoursEnabled: (typeof res.quietHoursEnabled === 'boolean') ? res.quietHoursEnabled : false,
@@ -1082,12 +1091,17 @@ function refreshSummary(cfg) {
   updateSummaryText('main-chip-template', `템플릿 ${templateCount}`);
   updateSummaryText('main-chip-quiet', snoozed ? '스누즈 적용' : (cfg.quietHoursEnabled ? getQuietHoursLabel(cfg) : '조용한 시간 꺼짐'));
   updateSummaryText('quick-dnd-sub', cfg.dndMode ? '완료 팝업 숨김' : '완료 팝업 표시');
-  updateSummaryText('quick-steering-sub', cfg.steeringEnabled ? `${cfg.steeringTheme === 'light' ? '라이트' : '다크'} 패널` : '런처 꺼짐');
+  updateSummaryText('quick-steering-sub', cfg.steeringEnabled ? (cfg.steeringAdvancedEnabled ? `새 채팅 ${normalizeSteeringNewChatTabCount(cfg.steeringNewChatTabCount)}탭` : `${cfg.steeringTheme === 'light' ? '라이트' : '다크'} 패널`) : '런처 꺼짐');
   updateSummaryText('quick-quiet-sub', cfg.quietHoursEnabled ? `${getQuietHoursLabel(cfg)}${quiet ? ' · 지금 적용' : ''}` : '사용 안 함');
   const quickDnd = $('quick-dnd-toggle');
   if (quickDnd && quickDnd.checked !== !!cfg.dndMode) quickDnd.checked = !!cfg.dndMode;
   const quickSteering = $('quick-steering-toggle');
   if (quickSteering && quickSteering.checked !== !!cfg.steeringEnabled) quickSteering.checked = !!cfg.steeringEnabled;
+  const steeringAdvancedToggle = $('steering-advanced-toggle');
+  if (steeringAdvancedToggle && steeringAdvancedToggle.checked !== !!cfg.steeringAdvancedEnabled) steeringAdvancedToggle.checked = !!cfg.steeringAdvancedEnabled;
+  const steeringNewChatCount = $('steering-new-chat-count');
+  const normalizedNewChatCount = String(normalizeSteeringNewChatTabCount(cfg.steeringNewChatTabCount));
+  if (steeringNewChatCount && steeringNewChatCount.value !== normalizedNewChatCount) steeringNewChatCount.value = normalizedNewChatCount;
   const quickQuiet = $('quick-quiet-toggle');
   if (quickQuiet && quickQuiet.checked !== !!cfg.quietHoursEnabled) quickQuiet.checked = !!cfg.quietHoursEnabled;
   const advancedToggleMap = {
@@ -1096,6 +1110,7 @@ function refreshSummary(cfg) {
     'advanced-steering-auto-focus': !!cfg.steeringAutoFocusInput,
     'advanced-steering-close-after-send': !!cfg.steeringCloseAfterSend,
     'advanced-steering-count-visible': !!cfg.steeringQueueCountVisible,
+    'advanced-steering-advanced-enabled': !!cfg.steeringAdvancedEnabled,
     'advanced-badge-enabled': !!cfg.badgeEnabled,
     'advanced-badge-count-enabled': !!cfg.badgeCountEnabled,
     'advanced-title-badge-enabled': !!cfg.titleBadgeEnabled,
@@ -1111,6 +1126,7 @@ function refreshSummary(cfg) {
   if (advancedSummary) {
     const parts = [];
     parts.push(cfg.steeringLauncherVisible ? '후속 지시 버튼 표시' : '후속 지시 버튼 숨김');
+    parts.push(cfg.steeringAdvancedEnabled ? `고급 새 채팅 ${normalizeSteeringNewChatTabCount(cfg.steeringNewChatTabCount)}탭` : '기본 후속 지시');
     parts.push(cfg.badgeEnabled ? (cfg.badgeCountEnabled ? '배지 숫자 켜짐' : '배지 숫자 꺼짐') : '배지 꺼짐');
     parts.push(cfg.titleBadgeEnabled ? (cfg.titleBadgeCountEnabled ? '탭 제목 숫자 켜짐' : '탭 제목 숫자 꺼짐') : '탭 제목 표시 꺼짐');
     parts.push(cfg.completionHistoryEnabled ? '완료 이력 저장' : '완료 이력 저장 안 함');
@@ -1843,6 +1859,8 @@ function wireActions(cfg) {
   }
   const steeringToggle = $('steering-toggle');
   const steeringTheme = $('steering-theme');
+  const steeringAdvancedToggle = $('steering-advanced-toggle');
+  const steeringNewChatCount = $('steering-new-chat-count');
   if (steeringToggle) {
     steeringToggle.checked = !!cfg.steeringEnabled;
     steeringToggle.addEventListener('change', () => {
@@ -1877,6 +1895,28 @@ function wireActions(cfg) {
       });
     });
   }
+  if (steeringAdvancedToggle) {
+    steeringAdvancedToggle.checked = !!cfg.steeringAdvancedEnabled;
+    steeringAdvancedToggle.addEventListener('change', () => {
+      cfg.steeringAdvancedEnabled = !!steeringAdvancedToggle.checked;
+      if ($('advanced-steering-advanced-enabled')) $('advanced-steering-advanced-enabled').checked = cfg.steeringAdvancedEnabled;
+      saveConfig(cfg, () => {
+        refreshSummary(cfg);
+        setHint('저장됨');
+      });
+    });
+  }
+  if (steeringNewChatCount) {
+    steeringNewChatCount.value = String(normalizeSteeringNewChatTabCount(cfg.steeringNewChatTabCount));
+    steeringNewChatCount.addEventListener('change', () => {
+      cfg.steeringNewChatTabCount = normalizeSteeringNewChatTabCount(steeringNewChatCount.value);
+      steeringNewChatCount.value = String(cfg.steeringNewChatTabCount);
+      saveConfig(cfg, () => {
+        refreshSummary(cfg);
+        setHint('저장됨');
+      });
+    });
+  }
   const bindAdvancedToggle = (id, key, options = {}) => {
     const el = $(id);
     if (!el) return;
@@ -1886,6 +1926,7 @@ function wireActions(cfg) {
       if (options.syncMainBadgeToggle && $('badge-toggle')) $('badge-toggle').checked = !!cfg[key];
       if (options.syncMainSteeringToggle && $('steering-toggle')) $('steering-toggle').checked = !!cfg[key];
       if (options.syncQuickSteeringToggle && $('quick-steering-toggle')) $('quick-steering-toggle').checked = !!cfg[key];
+      if (options.syncMainSteeringAdvancedToggle && $('steering-advanced-toggle')) $('steering-advanced-toggle').checked = !!cfg[key];
       saveConfig(cfg, () => {
         refreshSummary(cfg);
         refreshRuntimeDashboard(cfg, true);
@@ -1902,6 +1943,7 @@ function wireActions(cfg) {
   bindAdvancedToggle('advanced-steering-auto-focus', 'steeringAutoFocusInput');
   bindAdvancedToggle('advanced-steering-close-after-send', 'steeringCloseAfterSend');
   bindAdvancedToggle('advanced-steering-count-visible', 'steeringQueueCountVisible');
+  bindAdvancedToggle('advanced-steering-advanced-enabled', 'steeringAdvancedEnabled', { syncMainSteeringAdvancedToggle: true });
   bindAdvancedToggle('advanced-badge-enabled', 'badgeEnabled', { syncMainBadgeToggle: true });
   bindAdvancedToggle('advanced-badge-count-enabled', 'badgeCountEnabled');
   bindAdvancedToggle('advanced-title-badge-enabled', 'titleBadgeEnabled');

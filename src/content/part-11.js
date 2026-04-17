@@ -54,10 +54,18 @@ function applySteeringUiNow() {
   restoreSteeringDraftToInput();
   if (refs.tabTitleSave) refs.tabTitleSave.disabled = !IS_TOP_FRAME;
   if (refs.tabTitleClear) refs.tabTitleClear.disabled = !IS_TOP_FRAME || !hasCustomTabTitle();
+  if (refs.card) refs.card.dataset.advanced = steeringAdvancedEnabled ? 'true' : 'false';
+  if (refs.advancedCard) refs.advancedCard.classList.toggle('enabled', !!steeringAdvancedEnabled);
+  if (refs.advancedToggle) refs.advancedToggle.checked = !!steeringAdvancedEnabled;
+  if (refs.advancedBody) refs.advancedBody.style.display = steeringAdvancedEnabled ? 'flex' : 'none';
+  if (refs.newChatCount && refs.newChatCount.value !== String(steeringNewChatTabCount)) {
+    refs.newChatCount.value = String(steeringNewChatTabCount);
+  }
   refs.primary.textContent = getSteeringPrimaryLabel();
   refs.primary.disabled = false;
   const hasDraftText = !!String(refs.input?.value || '').trim();
   const hasDraftImages = getSteeringDraftAttachmentCount() > 0;
+  if (refs.newChatSend) refs.newChatSend.disabled = !steeringAdvancedEnabled || !hasDraftText || hasDraftImages || getSiteKey() !== 'chatgpt';
   if (refs.sendNow) refs.sendNow.disabled = !steeringQueue.length && !hasDraftText && !hasDraftImages;
   if (refs.clear) refs.clear.disabled = !steeringQueue.length && !hasDraftText && !hasDraftImages;
   if (refs.runNext) refs.runNext.disabled = !steeringQueue.length;

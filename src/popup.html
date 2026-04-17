@@ -173,7 +173,7 @@
     .custom-form { display: flex; flex-direction: column; gap: 10px; }
     .field { display: flex; flex-direction: column; gap: 4px; }
     .field label { font-size: 11px; color: #555; }
-    input[type="text"], input[type="time"], textarea, select {
+    input[type="text"], input[type="time"], input[type="number"], textarea, select {
       width: 100%;
       font-size: 12px;
       padding: 8px 10px;
@@ -829,6 +829,7 @@
         <div class="option"><span>열릴 때 입력창 자동 포커스</span><label class="switch"><input type="checkbox" id="advanced-steering-auto-focus"><span class="slider"></span></label></div>
         <div class="option"><span>전송 후 후속 지시 창 자동 닫기</span><label class="switch"><input type="checkbox" id="advanced-steering-close-after-send"><span class="slider"></span></label></div>
         <div class="option"><span>후속 지시 대기 숫자 표시</span><label class="switch"><input type="checkbox" id="advanced-steering-count-visible"><span class="slider"></span></label></div>
+        <div class="option"><span>후속 지시 고급설정</span><label class="switch"><input type="checkbox" id="advanced-steering-advanced-enabled"><span class="slider"></span></label></div>
         <div class="divider"></div>
         <div class="section-title">배지 세부</div>
         <div class="option"><span>익스텐션 배지 표시</span><label class="switch"><input type="checkbox" id="advanced-badge-enabled"><span class="slider"></span></label></div>
@@ -897,6 +898,21 @@
           </select>
         </div>
         <div class="hint">기본값은 다크이며, ChatGPT가 다크 테마여도 후속 지시 패널이 같이 어둡게 보이도록 맞춥니다.</div>
+        <div class="divider"></div>
+        <div class="section-title">고급설정</div>
+        <div class="option">
+          <span>새 ChatGPT 채팅 탭 전송</span>
+          <label class="switch">
+            <input type="checkbox" id="steering-advanced-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="desc">켜두면 후속 지시 패널이 세로로 길어지고, 기본 Enter가 현재 대화 대신 새 ChatGPT 채팅 탭으로 전송됩니다.</div>
+        <div class="field" style="margin-top: 10px;">
+          <label>새 채팅 탭 수</label>
+          <input type="number" id="steering-new-chat-count" min="1" max="8" step="1" inputmode="numeric" placeholder="3" />
+        </div>
+        <div class="hint">1~8개까지 열 수 있습니다. 기본값은 3개입니다.</div>
       </div>
     </div>
     <div class="sheet" id="alerts-sheet">

@@ -364,6 +364,32 @@ function pTabsUpdate(tabId, updateProps) {
     }
   });
 }
+function pTabsCreate(createProps) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.create(createProps, (tab) => {
+        if (chrome.runtime.lastError) return resolve(null);
+        if (tab) upsertTabMetaFromTab(tab);
+        resolve(tab || null);
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+function pTabsGet(tabId) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.get(tabId, (tab) => {
+        if (chrome.runtime.lastError) return resolve(null);
+        if (tab) upsertTabMetaFromTab(tab);
+        resolve(tab || null);
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
 function pTabsSendMessage(tabId, message) {
   return new Promise((resolve) => {
     try {
@@ -374,6 +400,21 @@ function pTabsSendMessage(tabId, message) {
       });
     } catch (_) {
       resolve(false);
+    }
+  });
+}
+function pTabsSendMessageResult(tabId, message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, message: chrome.runtime.lastError.message || '탭 메시지 전송 실패' });
+          return;
+        }
+        resolve(response || { ok: true });
+      });
+    } catch (_) {
+      resolve({ ok: false, message: '탭 메시지 전송 실패' });
     }
   });
 }
@@ -554,6 +595,92 @@ async function ensureContentScripts(tab) {
   // 3) 주입 직후 즉시 체크 요청
   await pTabsSendMessage(tabId, { action: 'force_check', reason: 'inject' });
   return true;
+}
+function isChatGptUrl(url) {
+  try {
+    const host = new URL(String(url || '')).hostname.toLowerCase();
+    return host === 'chatgpt.com' || host.endsWith('.chatgpt.com') || host === 'chat.openai.com';
+  } catch (_) {
+    return false;
+  }
+}
+function getChatGptNewChatUrl(sourceUrl) {
+  try {
+    const parsed = new URL(String(sourceUrl || ''));
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'chat.openai.com') return 'https://chat.openai.com/';
+  } catch (_) {}
+  return 'https://chatgpt.com/';
+}
+async function waitForNewChatContent(tabId, timeoutMs = 30000) {
+  const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || 30000);
+  while (Date.now() <= deadline) {
+    const tab = await pTabsGet(tabId);
+    if (tab?.id && isChatGptUrl(tab.url || '')) {
+      const ready = await ensureContentScripts(tab);
+      if (ready) {
+        const alive = await pTabsSendMessage(tabId, { action: 'ping' });
+        if (alive) return true;
+      }
+    }
+    await sleep(450);
+  }
+  return false;
+}
+async function enqueuePromptInNewChatTab(tab, text) {
+  if (!tab?.id) return { ok: false, tabId: null, message: '탭 생성 실패' };
+  const ready = await waitForNewChatContent(tab.id);
+  if (!ready) {
+    return { ok: false, tabId: tab.id, message: '새 채팅 탭 준비 시간 초과' };
+  }
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await pTabsSendMessageResult(tab.id, {
+      action: 'enqueue_steering_prompt',
+      text,
+      autoSendDelayMs: 1600,
+      source: 'new_chat_tab',
+    });
+    if (response?.ok) return { ok: true, tabId: tab.id };
+    await sleep(500 + attempt * 250);
+  }
+  return { ok: false, tabId: tab.id, message: '새 채팅 탭에 문구를 넣지 못했습니다.' };
+}
+async function openChatGptNewChatTabsForPrompt(message, sender) {
+  const text = String(message?.text || '').trim();
+  if (!text) return { ok: false, message: '보낼 문구가 비어 있습니다.' };
+  const sourceTab = sender?.tab || null;
+  const sourceUrl = String(message?.sourceUrl || sourceTab?.url || '');
+  if (!isChatGptUrl(sourceUrl)) {
+    return { ok: false, message: '새 채팅 탭 전송은 ChatGPT 탭에서만 사용할 수 있습니다.' };
+  }
+  const count = clampInt(message?.count, 3, 1, 8);
+  const url = getChatGptNewChatUrl(sourceUrl);
+  const createdTabs = [];
+  for (let i = 0; i < count; i += 1) {
+    const props = {
+      url,
+      active: false,
+    };
+    if (typeof sourceTab?.windowId === 'number') props.windowId = sourceTab.windowId;
+    if (typeof sourceTab?.index === 'number') props.index = sourceTab.index + i + 1;
+    const tab = await pTabsCreate(props);
+    if (tab?.id) createdTabs.push(tab);
+  }
+  if (!createdTabs.length) {
+    return { ok: false, message: '새 ChatGPT 탭을 만들지 못했습니다.' };
+  }
+  const results = await Promise.all(createdTabs.map((tab) => enqueuePromptInNewChatTab(tab, text)));
+  const sent = results.filter((item) => item?.ok);
+  return {
+    ok: sent.length > 0,
+    requestedCount: count,
+    createdCount: createdTabs.length,
+    sentCount: sent.length,
+    tabIds: sent.map((item) => item.tabId).filter(Number.isFinite),
+    message: sent.length > 0
+      ? `새 ChatGPT 채팅 ${sent.length}개에 전송 요청 완료`
+      : (results.find((item) => item?.message)?.message || '새 채팅 탭 전송에 실패했습니다.'),
+  };
 }
 function pIdleQueryState(idleSec) {
   return new Promise((resolve) => {
@@ -1051,6 +1178,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab) return;
   const tabId = sender.tab.id;
   const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
+  if (message.action === 'open_chatgpt_new_chat_tabs') {
+    openChatGptNewChatTabsForPrompt(message, sender)
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, message: '새 채팅 탭 전송 중 오류가 발생했습니다.' }));
+    return true;
+  }
   // content script(iframe)에서 top tab URL이 필요할 때 사용
   if (message.action === 'get_tab_url') {
     sendResponse({ url: sender.tab?.url || '' });

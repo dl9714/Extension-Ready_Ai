@@ -176,6 +176,14 @@ try {
       steeringQueueCountVisible = typeof changes[STEERING_STORAGE_KEYS.QUEUE_COUNT_VISIBLE]?.newValue === 'boolean' ? !!changes[STEERING_STORAGE_KEYS.QUEUE_COUNT_VISIBLE].newValue : true;
       updateSteeringUi();
     }
+    if (Object.prototype.hasOwnProperty.call(changes, STEERING_STORAGE_KEYS.ADVANCED_ENABLED)) {
+      steeringAdvancedEnabled = typeof changes[STEERING_STORAGE_KEYS.ADVANCED_ENABLED]?.newValue === 'boolean' ? !!changes[STEERING_STORAGE_KEYS.ADVANCED_ENABLED].newValue : false;
+      updateSteeringUi();
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, STEERING_STORAGE_KEYS.NEW_CHAT_TAB_COUNT)) {
+      steeringNewChatTabCount = normalizeSteeringNewChatTabCount(changes[STEERING_STORAGE_KEYS.NEW_CHAT_TAB_COUNT]?.newValue);
+      updateSteeringUi();
+    }
     if (Object.prototype.hasOwnProperty.call(changes, STEERING_STORAGE_KEYS.TEMPLATES)) {
       steeringTemplates = normalizeSteeringTemplates(changes[STEERING_STORAGE_KEYS.TEMPLATES]?.newValue);
       steeringTemplateRenderSignature = '';
@@ -241,7 +249,7 @@ try {
       setSteeringStatus(`${getSteeringQueueCountLabel()}`);
       updateSteeringUi();
       if (steeringPanelOpen && steeringAutoFocusInput) { try { steeringRefs?.input?.focus(); } catch (_) {} }
-      scheduleSteeringQueueProcessing(150);
+      scheduleSteeringQueueProcessing(Math.max(150, Math.min(10000, Number(msg.autoSendDelayMs) || 150)));
       try { sendResponse?.({ ok: true, count: steeringQueue.length }); } catch (_) {}
       return;
     }

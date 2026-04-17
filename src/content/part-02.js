@@ -76,6 +76,8 @@ var STEERING_STORAGE_KEYS = Object.freeze({
   CLOSE_AFTER_SEND: 'steeringCloseAfterSend',
   QUEUE_COUNT_VISIBLE: 'steeringQueueCountVisible',
   TEMPLATES: 'steeringTemplates',
+  ADVANCED_ENABLED: 'steeringAdvancedEnabled',
+  NEW_CHAT_TAB_COUNT: 'steeringNewChatTabCount',
 });
 var TITLE_BADGE_STORAGE_KEYS = Object.freeze({
   ENABLED: 'titleBadgeEnabled',
@@ -93,6 +95,8 @@ var steeringAutoFocusInput = true;
 var steeringCloseAfterSend = false;
 var steeringQueueCountVisible = true;
 var steeringTemplates = [];
+var steeringAdvancedEnabled = false;
+var steeringNewChatTabCount = 3;
 var titleBadgeEnabled = true;
 var titleBadgeCountEnabled = true;
 var customTabTitle = '';
@@ -254,6 +258,11 @@ function isComposerAcknowledgeSuppressed() {
 function normalizeSteeringTheme(value) {
   return String(value || '').trim().toLowerCase() === STEERING_THEME.LIGHT ? STEERING_THEME.LIGHT : STEERING_THEME.DARK;
 }
+function normalizeSteeringNewChatTabCount(value) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return 3;
+  return Math.max(1, Math.min(8, parsed));
+}
 function truncateSteeringText(value, max = 80) {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -304,6 +313,8 @@ function loadSteeringPrefs(cb) {
       STEERING_STORAGE_KEYS.CLOSE_AFTER_SEND,
       STEERING_STORAGE_KEYS.QUEUE_COUNT_VISIBLE,
       STEERING_STORAGE_KEYS.TEMPLATES,
+      STEERING_STORAGE_KEYS.ADVANCED_ENABLED,
+      STEERING_STORAGE_KEYS.NEW_CHAT_TAB_COUNT,
       TITLE_BADGE_STORAGE_KEYS.ENABLED,
       TITLE_BADGE_STORAGE_KEYS.COUNT_ENABLED,
     ], (res) => {
@@ -314,6 +325,8 @@ function loadSteeringPrefs(cb) {
       steeringCloseAfterSend = typeof res?.[STEERING_STORAGE_KEYS.CLOSE_AFTER_SEND] === 'boolean' ? !!res[STEERING_STORAGE_KEYS.CLOSE_AFTER_SEND] : false;
       steeringQueueCountVisible = typeof res?.[STEERING_STORAGE_KEYS.QUEUE_COUNT_VISIBLE] === 'boolean' ? !!res[STEERING_STORAGE_KEYS.QUEUE_COUNT_VISIBLE] : true;
       steeringTemplates = normalizeSteeringTemplates(res?.[STEERING_STORAGE_KEYS.TEMPLATES]);
+      steeringAdvancedEnabled = typeof res?.[STEERING_STORAGE_KEYS.ADVANCED_ENABLED] === 'boolean' ? !!res[STEERING_STORAGE_KEYS.ADVANCED_ENABLED] : false;
+      steeringNewChatTabCount = normalizeSteeringNewChatTabCount(res?.[STEERING_STORAGE_KEYS.NEW_CHAT_TAB_COUNT]);
       titleBadgeEnabled = typeof res?.[TITLE_BADGE_STORAGE_KEYS.ENABLED] === 'boolean' ? !!res[TITLE_BADGE_STORAGE_KEYS.ENABLED] : true;
       titleBadgeCountEnabled = typeof res?.[TITLE_BADGE_STORAGE_KEYS.COUNT_ENABLED] === 'boolean' ? !!res[TITLE_BADGE_STORAGE_KEYS.COUNT_ENABLED] : true;
       cb?.();
@@ -326,6 +339,8 @@ function loadSteeringPrefs(cb) {
     steeringCloseAfterSend = false;
     steeringQueueCountVisible = true;
     steeringTemplates = [];
+    steeringAdvancedEnabled = false;
+    steeringNewChatTabCount = 3;
     titleBadgeEnabled = true;
     titleBadgeCountEnabled = true;
     cb?.();

@@ -200,7 +200,24 @@ function getSteeringStateLabel() {
   return `${name} 후속 지시`;
 }
 function getSteeringPrimaryLabel() {
+  if (steeringAdvancedEnabled) return '새 채팅';
   return canAutoSendSteeringNow() ? 'Enter' : '입력대기';
+}
+function setSteeringAdvancedEnabled(nextValue) {
+  steeringAdvancedEnabled = !!nextValue;
+  try {
+    chrome.storage.local.set({ [STEERING_STORAGE_KEYS.ADVANCED_ENABLED]: steeringAdvancedEnabled });
+  } catch (_) {}
+  setSteeringStatus(steeringAdvancedEnabled ? '고급설정 ON · 새 채팅 전송 모드' : '고급설정 OFF · 현재 대화 후속 지시 모드');
+  updateSteeringUi();
+}
+function setSteeringNewChatTabCountValue(value) {
+  steeringNewChatTabCount = normalizeSteeringNewChatTabCount(value);
+  try {
+    chrome.storage.local.set({ [STEERING_STORAGE_KEYS.NEW_CHAT_TAB_COUNT]: steeringNewChatTabCount });
+  } catch (_) {}
+  setSteeringStatus(`새 채팅 탭 수: ${steeringNewChatTabCount}`);
+  updateSteeringUi();
 }
 function applySteeringTheme() {
   if (!steeringHost || !steeringRoot) return;
