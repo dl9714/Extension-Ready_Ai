@@ -781,7 +781,7 @@
             </div>
             <div class="toggle-tile">
               <div class="toggle-tile-top">
-                <div class="toggle-tile-title">스티어링</div>
+                <div class="toggle-tile-title">후속 지시</div>
                 <label class="switch">
                   <input type="checkbox" id="quick-steering-toggle">
                   <span class="slider"></span>
@@ -806,7 +806,7 @@
             <button class="text-link-btn" type="button" data-open-sheet="alerts-sheet">알림</button>
             <button class="text-link-btn" type="button" data-open-sheet="builtin-sites-sheet">기본 사이트</button>
             <button class="text-link-btn" type="button" data-open-sheet="custom-sites-sheet">직접 추가</button>
-            <button class="text-link-btn" type="button" data-open-sheet="steering-sheet">스티어링</button>
+            <button class="text-link-btn" type="button" data-open-sheet="steering-sheet">후속 지시</button>
             <button class="text-link-btn" type="button" data-open-sheet="title-manager-sheet">탭 이름</button>
             <button class="text-link-btn" type="button" data-open-sheet="gemini-sheet">Gemini</button>
             <button class="text-link-btn" type="button" data-open-sheet="utilities-sheet">유틸리티</button>
@@ -819,16 +819,16 @@
         <div class="sheet-head">
           <div class="sheet-title-wrap">
             <h3 class="sheet-title">상세설정</h3>
-            <div class="sheet-sub">스티어링, 배지, 탭 제목, 이력, 팝업 동작을 세분화해서 켜고 끌 수 있습니다.</div>
+            <div class="sheet-sub">후속 지시, 배지, 탭 제목, 이력, 팝업 동작을 세분화해서 켜고 끌 수 있습니다.</div>
           </div>
           <button class="btn ghost" data-close-sheet>닫기</button>
         </div>
-        <div class="section-title">스티어링 세부</div>
-        <div class="option"><span>스티어링 전체 사용</span><label class="switch"><input type="checkbox" id="advanced-steering-enabled"><span class="slider"></span></label></div>
-        <div class="option"><span>스티어링 열기 닫기 버튼 표시</span><label class="switch"><input type="checkbox" id="advanced-steering-launcher-visible"><span class="slider"></span></label></div>
+        <div class="section-title">후속 지시 세부</div>
+        <div class="option"><span>후속 지시 전체 사용</span><label class="switch"><input type="checkbox" id="advanced-steering-enabled"><span class="slider"></span></label></div>
+        <div class="option"><span>후속 지시 열기 닫기 버튼 표시</span><label class="switch"><input type="checkbox" id="advanced-steering-launcher-visible"><span class="slider"></span></label></div>
         <div class="option"><span>열릴 때 입력창 자동 포커스</span><label class="switch"><input type="checkbox" id="advanced-steering-auto-focus"><span class="slider"></span></label></div>
-        <div class="option"><span>전송 후 스티어링 자동 닫기</span><label class="switch"><input type="checkbox" id="advanced-steering-close-after-send"><span class="slider"></span></label></div>
-        <div class="option"><span>스티어링 대기 숫자 표시</span><label class="switch"><input type="checkbox" id="advanced-steering-count-visible"><span class="slider"></span></label></div>
+        <div class="option"><span>전송 후 후속 지시 창 자동 닫기</span><label class="switch"><input type="checkbox" id="advanced-steering-close-after-send"><span class="slider"></span></label></div>
+        <div class="option"><span>후속 지시 대기 숫자 표시</span><label class="switch"><input type="checkbox" id="advanced-steering-count-visible"><span class="slider"></span></label></div>
         <div class="divider"></div>
         <div class="section-title">배지 세부</div>
         <div class="option"><span>익스텐션 배지 표시</span><label class="switch"><input type="checkbox" id="advanced-badge-enabled"><span class="slider"></span></label></div>
@@ -875,28 +875,28 @@
       <div class="sheet-scroll">
         <div class="sheet-head">
           <div class="sheet-title-wrap">
-            <h3 class="sheet-title">스티어링</h3>
+            <h3 class="sheet-title">후속 지시</h3>
             <div class="sheet-sub">답변 완료 후 바로 이어서 지시를 넣는 상시 런처와 패널 테마를 조정합니다.</div>
           </div>
           <button class="btn ghost" data-close-sheet>닫기</button>
         </div>
         <div class="option">
-          <span>스티어링 표시</span>
+          <span>후속 지시 표시</span>
           <label class="switch">
             <input type="checkbox" id="steering-toggle">
             <span class="slider"></span>
           </label>
         </div>
-        <div class="desc">꺼두면 ChatGPT 화면에 스티어링 런처와 패널이 나타나지 않습니다.</div>
+        <div class="desc">꺼두면 ChatGPT 화면에 후속 지시 런처와 패널이 나타나지 않습니다.</div>
         <div class="divider"></div>
         <div class="field">
-          <label>스티어링 패널 테마</label>
+          <label>후속 지시 패널 테마</label>
           <select id="steering-theme">
             <option value="dark">다크</option>
             <option value="light">라이트</option>
           </select>
         </div>
-        <div class="hint">기본값은 다크이며, ChatGPT가 다크 테마여도 스티어링이 같이 어둡게 보이도록 맞춥니다.</div>
+        <div class="hint">기본값은 다크이며, ChatGPT가 다크 테마여도 후속 지시 패널이 같이 어둡게 보이도록 맞춥니다.</div>
       </div>
     </div>
     <div class="sheet" id="alerts-sheet">
@@ -921,7 +921,7 @@
           <div class="sound-top">
             <div class="sound-head">
               <div class="sound-title">개별 완료 알림</div>
-              <div class="sound-sub">탭 하나가 🟠에서 🟢로 바뀌었을 때 따로 울리는 알림.</div>
+              <div class="sound-sub">탭 하나가 🟠에서 ⚪로 바뀌었을 때 따로 울리는 알림.</div>
             </div>
             <label class="switch">
               <input type="checkbox" id="individual-alert-toggle">
@@ -1021,7 +1021,7 @@
           <button class="btn ghost" data-close-sheet>닫기</button>
         </div>
         <div class="option">
-          <span>자동 확인 켜기 🟢</span>
+          <span>자동 확인 켜기 ⚪</span>
           <label class="switch">
             <input type="checkbox" id="gemini-probe-toggle">
             <span class="slider"></span>
@@ -1111,7 +1111,7 @@
         <div class="sheet-head">
           <div class="sheet-title-wrap">
             <h3 class="sheet-title">실시간 탭 현황</h3>
-            <div class="sheet-sub">감시 중인 탭, 상태, 최근 갱신 시점, 스티어링 대기 수를 같이 봅니다.</div>
+            <div class="sheet-sub">감시 중인 탭, 상태, 최근 갱신 시점, 후속 지시 대기 수를 같이 봅니다.</div>
           </div>
           <button class="btn ghost" data-close-sheet>닫기</button>
         </div>
@@ -1167,8 +1167,8 @@
   <div class="sheet-scroll">
     <div class="sheet-head">
       <div class="sheet-title-wrap">
-        <h3 class="sheet-title">스티어링 대기 템플릿</h3>
-        <div class="sheet-sub">익스텐션 안에서 버튼 이름, 실제 문구, 툴팁 설명까지 등록하고 스티어링 창 버튼으로 바로 쓸 수 있습니다.</div>
+        <h3 class="sheet-title">후속 지시 템플릿</h3>
+        <div class="sheet-sub">익스텐션 안에서 버튼 이름, 실제 문구, 툴팁 설명까지 등록하고 후속 지시 창 버튼으로 바로 쓸 수 있습니다.</div>
       </div>
       <button class="btn ghost" data-close-sheet>닫기</button>
     </div>

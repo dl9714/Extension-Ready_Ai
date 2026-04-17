@@ -12,7 +12,7 @@ function bindHandlersOnce() {
   _handlersBound = true;
   // 이벤트 리스너 등록
   // - focus/keydown으로는 절대 지우지 않는다.
-  // - "클릭" 또는 "스크롤(휠/스크롤 이벤트)"로만 🟢 -> ⚪
+  // - "클릭" 또는 "스크롤(휠/스크롤 이벤트)"로만 ⚪ -> 🟢
   document.addEventListener('click', markAsAcknowledged, true);
   document.addEventListener('scroll', markAsAcknowledged, true);
   document.addEventListener('wheel', markAsAcknowledged, { passive: true, capture: true });
@@ -59,7 +59,7 @@ function startMonitoring(site) {
       childList: true,
       subtree: true,
       // Gemini는 childList 변화 없이 style/class/aria-label만 바뀌는 경우가 있어
-      // attributes 감시를 켜야 🟠 -> 🟢 전환을 놓치지 않는다.
+      // attributes 감시를 켜야 🟠 -> ⚪ 전환을 놓치지 않는다.
       attributes: true,
       attributeFilter: ['aria-label', 'style', 'class', 'hidden', 'disabled']
     });
@@ -229,7 +229,7 @@ try {
         return;
       }
       if (!steeringEnabled) {
-        try { sendResponse?.({ ok: false, message: '스티어링이 꺼져 있습니다.' }); } catch (_) {}
+        try { sendResponse?.({ ok: false, message: '후속 지시 기능이 꺼져 있습니다.' }); } catch (_) {}
         return;
       }
       const item = enqueueSteeringPrompt(text, { images: [] });
