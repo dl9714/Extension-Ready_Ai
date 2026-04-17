@@ -33,26 +33,6 @@ var STEERING_UI_MARKUP_TEMPLATE = `
           </div>
           <div class="title-meta" id="ready-ai-steering-tab-title-meta">크롬 탭 이름 자동</div>
         </div>
-        <div class="advanced-card" id="ready-ai-steering-advanced-card">
-          <div class="advanced-toggle-row">
-            <div class="advanced-copy">
-              <div class="advanced-title">후속 지시 고급설정</div>
-              <div class="advanced-sub">ON이면 새 ChatGPT 채팅 탭으로 분산 전송</div>
-            </div>
-            <label class="advanced-switch" title="후속 지시 고급설정 켜기/끄기">
-              <input type="checkbox" id="ready-ai-steering-advanced-toggle" />
-              <span></span>
-            </label>
-          </div>
-          <div class="advanced-body" id="ready-ai-steering-advanced-body">
-            <div class="advanced-field-row">
-              <label for="ready-ai-steering-new-chat-count">새 채팅 탭 수</label>
-              <input id="ready-ai-steering-new-chat-count" type="number" min="1" max="8" step="1" value="3" inputmode="numeric" />
-              <button class="advanced-btn" type="button" id="ready-ai-steering-new-chat-send">새 채팅으로 보내기</button>
-            </div>
-            <div class="advanced-hint">기본 Enter도 고급설정 ON에서는 현재 대화가 아니라 새 채팅 탭으로 보냅니다. 이미지는 현재 대화 전송만 지원합니다.</div>
-          </div>
-        </div>
         <textarea class="input" id="ready-ai-steering-input" placeholder="후속 지시 입력 · 이미지 드래그 가능"></textarea>
         <div class="drop-shield" id="ready-ai-steering-drop-shield" hidden>여기에 놓으면 이미지 첨부</div>
         <div class="template-wrap" id="ready-ai-steering-template-wrap">
@@ -79,6 +59,26 @@ var STEERING_UI_MARKUP_TEMPLATE = `
           <button class="btn subtle" type="button" id="ready-ai-steering-clear">전체비우기</button>
         </div>
         <div class="status" id="ready-ai-steering-status"></div>
+        <div class="advanced-card" id="ready-ai-steering-advanced-card">
+          <div class="advanced-toggle-row">
+            <div class="advanced-copy">
+              <div class="advanced-title">후속 지시 고급설정</div>
+              <div class="advanced-sub">ON이면 새 ChatGPT 채팅 탭으로 분산 전송</div>
+            </div>
+            <label class="advanced-switch" title="후속 지시 고급설정 켜기/끄기">
+              <input type="checkbox" id="ready-ai-steering-advanced-toggle" />
+              <span></span>
+            </label>
+          </div>
+          <div class="advanced-body" id="ready-ai-steering-advanced-body">
+            <div class="advanced-field-row">
+              <label for="ready-ai-steering-new-chat-count">새 채팅 탭 수</label>
+              <input id="ready-ai-steering-new-chat-count" type="number" min="1" max="8" step="1" value="3" inputmode="numeric" />
+              <button class="advanced-btn" type="button" id="ready-ai-steering-new-chat-send">새 채팅으로 보내기</button>
+            </div>
+            <div class="advanced-hint">기본 Enter도 고급설정 ON에서는 현재 대화가 아니라 새 채팅 탭으로 보냅니다. 이미지는 현재 대화 전송만 지원합니다.</div>
+          </div>
+        </div>
       </div>
       <div class="attachment-preview" id="ready-ai-steering-attachment-preview" hidden>
         <div class="attachment-preview-card">
