@@ -71,25 +71,11 @@ var STEERING_UI_STYLE_TEMPLATE_B = `
         color: #0f172a;
       }
       .title-label-badge {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 18px;
-        height: 18px;
-        border: 1px solid rgba(148, 163, 184, 0.36);
-        border-radius: 999px;
-        background: #fff;
-        color: #0f172a;
-        font-size: 11px;
-        font-weight: 800;
-        line-height: 1.2;
+        display: inline-block;
+        font-size: 12px;
+        line-height: 1;
         white-space: nowrap;
         flex: 0 0 auto;
-        box-shadow: 0 8px 18px rgba(2, 6, 23, 0.16);
-      }
-      .dock[data-theme="light"] .title-label-badge {
-        border-color: rgba(15, 23, 42, 0.12);
-        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.1);
       }
       .title-edit {
         display: grid;
