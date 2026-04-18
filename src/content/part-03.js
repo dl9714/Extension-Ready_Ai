@@ -180,6 +180,7 @@ function clearSteeringCompletionOffer() {
   if (completionStatus === 'completed') {
     completionStatus = 'idle';
     updateTitleBadge();
+    updateSteeringUi();
     try {
       chrome.runtime.sendMessage({
         action: 'user_activity',
@@ -188,6 +189,11 @@ function clearSteeringCompletionOffer() {
       });
     } catch (_) {}
   }
+}
+function getCurrentTitleBadgeGlyph() {
+  if (isGenerating) return TITLE_BADGE.ORANGE;
+  if (completionStatus === 'completed') return TITLE_BADGE.GREEN;
+  return TITLE_BADGE.WHITE;
 }
 function getSteeringLauncherText() {
   return steeringPanelOpen ? '후속 지시 닫기' : '후속 지시 열기';
