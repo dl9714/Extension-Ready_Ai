@@ -98,6 +98,93 @@ function updateSteeringUi() {
 // =========================
 // Generating detection rules
 // =========================
+var CHATGPT_IMAGE_GENERATING_RE = /(\b(?:creating|generating|making|rendering|drawing)\s+(?:an?\s+)?images?\b|\bimages?\s+(?:is|are|being)?\s*(?:created|generated|rendered)\b|이미지(?:를|가)?\s*(?:생성|만들|그리)(?:하는|하고\s*있는|고\s*있는|는)?\s*중|이미지\s*생성\s*중)/i;
+function getElementSignalText(el) {
+  if (!el) return '';
+  const attrs = [
+    el.getAttribute?.('aria-label'),
+    el.getAttribute?.('title'),
+    el.getAttribute?.('data-testid'),
+    el.getAttribute?.('role'),
+    el.getAttribute?.('class'),
+  ];
+  return `${attrs.filter(Boolean).join(' ')} ${el.innerText || el.textContent || ''}`.replace(/\s+/g, ' ').trim();
+}
+function hasChatGptImageGenerationSignal(el) {
+  const signal = getElementSignalText(el);
+  if (CHATGPT_IMAGE_GENERATING_RE.test(signal)) return true;
+  return /(?:image|이미지).*(?:generat|creat|progress|loading|skeleton|생성|진행|로딩)|(?:generat|creat).*(?:image)/i.test(signal);
+}
+function hasChatGptProgressIndicator(el) {
+  if (!el) return false;
+  const selectors = [
+    '[role="progressbar"]',
+    '[aria-busy="true"]',
+    '[data-testid*="progress"]',
+    '[data-testid*="loading"]',
+    '.animate-spin',
+    '.animate-pulse',
+    '[class*="shimmer"]',
+    '[class*="skeleton"]',
+  ];
+  for (const selector of selectors) {
+    const candidates = el.matches?.(selector) ? [el] : Array.from(el.querySelectorAll?.(selector) || []);
+    if (candidates.some((candidate) => isVisible(candidate))) return true;
+  }
+  return false;
+}
+function getVisibleChatGptTurnCandidates() {
+  const selectors = [
+    '[data-message-author-role="assistant"]',
+    '[data-testid^="conversation-turn-"]',
+    'article[data-testid*="conversation-turn"]',
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const selector of selectors) {
+    for (const el of qsa(selector)) {
+      if (!el || seen.has(el) || !isVisible(el)) continue;
+      seen.add(el);
+      out.push(el);
+    }
+  }
+  return out;
+}
+function isLikelyUserChatGptTurn(el) {
+  const author = String(el?.getAttribute?.('data-message-author-role') || '').trim().toLowerCase();
+  if (author === 'user') return true;
+  if (author === 'assistant') return false;
+  const hasUser = !!el?.querySelector?.('[data-message-author-role="user"]');
+  const hasAssistant = !!el?.querySelector?.('[data-message-author-role="assistant"]');
+  return hasUser && !hasAssistant;
+}
+function detectChatGPTImageGenerating() {
+  const statusSelectors = [
+    '[role="status"]',
+    '[aria-live]',
+    '[aria-busy="true"]',
+    '[data-testid*="image-generation"]',
+    '[data-testid*="image_generation"]',
+    '[data-testid*="generating-image"]',
+    '[data-testid*="image-gen"]',
+    '[data-testid*="progress"]',
+    '[data-testid*="loading"]',
+  ];
+  for (const selector of statusSelectors) {
+    for (const el of qsa(selector)) {
+      if (!isVisible(el)) continue;
+      if (hasChatGptImageGenerationSignal(el)) return true;
+    }
+  }
+  const turns = getVisibleChatGptTurnCandidates();
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    if (isLikelyUserChatGptTurn(turn)) continue;
+    if (CHATGPT_IMAGE_GENERATING_RE.test(getElementSignalText(turn))) return true;
+    if (hasChatGptProgressIndicator(turn) && hasChatGptImageGenerationSignal(turn)) return true;
+  }
+  return false;
+}
 function detectChatGPTGenerating() {
   const selectors = [
     '[data-testid="stop-button"]',
@@ -109,6 +196,7 @@ function detectChatGPTGenerating() {
     const btns = qsa(sel);
     if (btns.some((btn) => isVisible(btn) && isEnabledButtonLike(btn))) return true;
   }
+  if (detectChatGPTImageGenerating()) return true;
   return false;
 }
 function detectGeminiGenerating() {
