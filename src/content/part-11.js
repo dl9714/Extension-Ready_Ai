@@ -25,6 +25,7 @@ function acknowledgeCompletion() {
   if (completionStatus !== 'completed') return;
   completionStatus = 'idle';
   updateTitleBadge();
+  updateSteeringUi();
   chrome.runtime.sendMessage({
     action: 'user_activity',
     platform: getSiteKey(),
@@ -40,6 +41,7 @@ function applySteeringUiNow() {
   if (!refs) return;
   refs.title.textContent = getSteeringStateLabel();
   refs.meta.textContent = getSteeringQueueCountLabel();
+  if (refs.tabTitleBadge) refs.tabTitleBadge.textContent = getCurrentTitleBadgeGlyph();
   if (refs.launcherCount) {
     refs.launcherCount.textContent = getSteeringQueueCountLabel();
     refs.launcherCount.style.display = steeringQueueCountVisible ? 'inline-flex' : 'none';

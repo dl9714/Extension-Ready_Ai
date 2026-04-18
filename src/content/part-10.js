@@ -164,6 +164,7 @@ function buildSteeringRefs() {
     tabTitleSave: steeringRoot.getElementById('ready-ai-steering-tab-title-save'),
     tabTitleClear: steeringRoot.getElementById('ready-ai-steering-tab-title-clear'),
     tabTitlePresets: Array.from(steeringRoot.querySelectorAll('[data-preset-title]')),
+    tabTitleBadge: steeringRoot.querySelector('.title-label-badge'),
     tabTitleMeta: steeringRoot.getElementById('ready-ai-steering-tab-title-meta'),
     advancedCard: steeringRoot.getElementById('ready-ai-steering-advanced-card'),
     advancedToggle: steeringRoot.getElementById('ready-ai-steering-advanced-toggle'),
